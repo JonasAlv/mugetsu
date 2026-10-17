@@ -15372,3 +15372,133 @@ index 9ebd5e94a..54eb29d88 100644
              &instance,
              None,
              Default::default(),
+diff --git a/core/src/display_object/interactive.rs b/core/src/display_object/interactive.rs
+index 29fce9227c825a85aac2d069dfbb6984242e0e1f..7ce4cc0be162dc216fa50acca05fc00b6fd6c670 100644
+--- a/core/src/display_object/interactive.rs
++++ b/core/src/display_object/interactive.rs
+@@ -819,22 +819,12 @@ pub trait TInteractiveObject<'gc>:
+     #[no_dynamic]
+     fn should_fire_event_handlers(
+         self,
+-        context: &mut UpdateContext<'gc>,
+-        event: ClipEvent,
++        _context: &mut UpdateContext<'gc>,
++        _event: ClipEvent,
+     ) -> bool {
+-        // Event handlers are supported only by SWF6+.
+-        if self.as_displayobject().movie().version() < 6 {
+-            return false;
+-        }
+-
+-        // Non-keyboard events are always handled.
+-        if !event.is_key_event() {
+-            return true;
+-        }
+-
+-        // Keyboard events don't fire their methods unless the object has focus (#2120).
+-        // The focus highlight also has to be active (see test focus_keyboard_press).
+-        self.has_focus() && context.focus_tracker.highlight().is_active()
++        // AQW keyboard controls are attached to clips without requiring an exclusive focus
++        // highlight. Keep the normal SWF version gate for older movies.
++        self.as_displayobject().movie().version() >= 6
+     }
+ }
+ 
+diff --git a/core/src/events.rs b/core/src/events.rs
+index a1f52a702575d88b5aeb84c22ce819a5bf1a5785..1ec66635327344e04bb191dd9021d1faa62292d1 100644
+--- a/core/src/events.rs
++++ b/core/src/events.rs
+@@ -328,6 +328,8 @@ impl ClipEvent<'_> {
+         ClipEventFlag::DRAG_OUT.bits()
+             | ClipEventFlag::DRAG_OVER.bits()
+             | ClipEventFlag::KEY_PRESS.bits()
++            | ClipEventFlag::KEY_DOWN.bits()
++            | ClipEventFlag::KEY_UP.bits()
+             | ClipEventFlag::PRESS.bits()
+             | ClipEventFlag::ROLL_OUT.bits()
+             | ClipEventFlag::ROLL_OVER.bits()
+diff --git a/core/src/input.rs b/core/src/input.rs
+index 922d13ea4e6ad7d28a9061a4c03da75517bab268..659a11a5eeb739c852c35e879c5f8ffa55dab59a 100644
+--- a/core/src/input.rs
++++ b/core/src/input.rs
+@@ -104,7 +104,7 @@ impl InputManager {
+             last_char: None,
+             last_click: None,
+             gamepad_button_mapping,
+-            key_code_mapping_type: KeyCodeMappingType::Logical,
++            key_code_mapping_type: KeyCodeMappingType::Physical,
+         }
+     }
+ 
+@@ -227,7 +227,10 @@ impl InputManager {
+             PlayerEvent::Ime(ime) => InputEvent::Ime(ime),
+ 
+             // The following are not input events.
+-            PlayerEvent::FocusGained | PlayerEvent::FocusLost => return None,
++            PlayerEvent::FocusGained | PlayerEvent::FocusLost => {
++                self.clear_keys();
++                return None;
++            }
+         };
+ 
+         self.handle_event(&event);
+@@ -300,6 +303,13 @@ impl InputManager {
+         index
+     }
+ 
++    pub fn clear_keys(&mut self) {
++        self.keys_down.clear();
++        self.keys_down_phys_loc.clear();
++        self.last_key = KeyCode::UNKNOWN;
++        self.last_char = None;
++    }
++
+     pub fn is_key_down(&self, key: KeyCode) -> bool {
+         self.keys_down.contains(&key)
+     }
+diff --git a/core/src/player.rs b/core/src/player.rs
+index 50b747f3ebd83fc5f8ea38f3f7170946bf9e3957..1998923c2b1e26743a08a366efc68f868eff4bfe 100644
+--- a/core/src/player.rs
++++ b/core/src/player.rs
+@@ -1198,13 +1198,18 @@ impl Player {
+     }
+ 
+     fn handle_focus_event(&mut self, event: PlayerEvent) -> bool {
+-        if let PlayerEvent::FocusLost = event {
+-            self.mutate_with_update_context(|context| {
+-                let focus_tracker = context.focus_tracker;
+-                focus_tracker.reset_focus(context);
+-            });
+-        }
+-
++        self.input.clear_keys();
++        self.mutate_with_update_context(|context| {
++            let event_name = match event {
++                PlayerEvent::FocusLost => "deactivate",
++                PlayerEvent::FocusGained => "activate",
++                _ => return,
++            };
++            if let Some(stage) = context.stage.object2() {
++                let evt = Avm2EventObject::bare_default_event(context, event_name);
++                Avm2::dispatch_event(context, evt, stage.into());
++            }
++        });
+         true
+     }
+ 
+diff --git a/desktop/src/app.rs b/desktop/src/app.rs
+index 6b65b00061ebe8dca27fceb19a363d194c6ac6e6..f0d4914287927413156f6885b7a72e6608df1572 100644
+--- a/desktop/src/app.rs
++++ b/desktop/src/app.rs
+@@ -506,9 +506,11 @@ impl MainWindow {
+                 }
+             }
+             WindowEvent::Focused(true) => {
++                self.modifiers = Default::default();
+                 self.player.handle_event(PlayerEvent::FocusGained);
+             }
+             WindowEvent::Focused(false) => {
++                self.modifiers = Default::default();
+                 self.player.handle_event(PlayerEvent::FocusLost);
+             }
+             WindowEvent::MouseInput { button, state, .. } => {
