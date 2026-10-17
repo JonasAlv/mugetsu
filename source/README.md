@@ -2,7 +2,7 @@
 
 Mugetsu is [Ruffle](https://github.com/ruffle-rs/ruffle) (the open-source Flash Player emulator)
 with changes for AdventureQuest Worlds. This folder holds those changes as patches on top of
-Ruffle, plus the script that builds `Mugetsu.exe` from them.
+Ruffle, plus scripts that build the Windows and Linux binaries from them.
 
 Every release is built from this folder by GitHub Actions (`.github/workflows/build.yml`); each
 run's page shows the build log and the SHA-256 of the zip it made, which matches the file on the
@@ -18,6 +18,7 @@ release page.
 | `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch` | Changes to three libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0 from crates.io) |
 | `pgo/aqw.profdata.zip` | The speed profile (PGO): counts of which code runs most while playing AQW, recorded with a measuring build. The compiler uses it to optimize for real play. It holds function names and counts only. |
 | `build.ps1` | Downloads Ruffle at `RUFFLE_COMMIT` and the three libraries, applies the patches and builds |
+| `build.sh` | Downloads the same pinned sources, applies the patches and builds the Linux binary |
 | `release/` | The other files in the release zip (readme, license texts, notices) |
 | `notes/` | Release notes, used for the draft release |
 
@@ -35,6 +36,19 @@ a while: Ruffle is a large program.
 
 Your build won't be byte-for-byte identical to a release (file paths and the machine differ), but
 it's made from the same code the same way.
+
+## Building it yourself (Linux)
+
+You need Rust (`rustup toolchain install 1.99.0`), Java 17 or newer, git, and the usual desktop
+development libraries for Wayland/X11. From this folder, run:
+
+```
+./build.sh
+```
+
+The result is `build/out/Mugetsu`. Use `./build.sh --no-pgo` to skip the speed profile, or
+`./build.sh --prepare-only` to fetch and patch the source without compiling. The binary uses
+Ruffle's normal winit Wayland/X11 backend and native window decorations.
 
 ## What the changes do
 
