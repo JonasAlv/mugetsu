@@ -15372,3 +15372,197 @@ index 9ebd5e94a..54eb29d88 100644
              &instance,
              None,
              Default::default(),
+--- a/desktop/src/mugetsu.rs	2026-10-17 14:39:38.103250475 -0300
++++ b/desktop/src/mugetsu.rs	2026-10-17 14:39:50.852215096 -0300
+@@ -123,6 +123,8 @@
+ pub enum Graphics {
+     Vulkan,
+     Dx12,
++    #[cfg(target_os = "linux")]
++    Gl,
+ }
+ 
+ impl Graphics {
+@@ -130,6 +132,8 @@
+         match self {
+             Graphics::Vulkan => "vulkan",
+             Graphics::Dx12 => "dx12",
++        #[cfg(target_os = "linux")]
++        Graphics::Gl => "gl",
+         }
+     }
+ 
+@@ -137,6 +141,8 @@
+         match self {
+             Graphics::Vulkan => "Vulkan",
+             Graphics::Dx12 => "DirectX 12",
++        #[cfg(target_os = "linux")]
++        Graphics::Gl => "OpenGL",
+         }
+     }
+ }
+@@ -158,10 +164,21 @@
+     match text.trim() {
+         "vulkan" => Some(Graphics::Vulkan),
+         "dx12" => Some(Graphics::Dx12),
++        #[cfg(target_os = "linux")]
++        "gl" => Some(Graphics::Gl),
+         _ => None,
+     }
+ }
+ 
++/// Restart the current Mugetsu process after a graphics choice changes.
++pub fn restart() {
++    let Ok(exe) = std::env::current_exe() else { return };
++    let _ = std::process::Command::new(exe)
++        .args(std::env::args_os().skip(1))
++        .spawn();
++    std::process::exit(0);
++}
++
+ pub fn save_graphics(choice: Option<Graphics>) {
+     let Some(dir) = config_dir() else {
+         return;
+--- a/desktop/src/gui.rs	2026-10-17 14:39:38.104188514 -0300
++++ b/desktop/src/gui.rs	2026-10-17 14:41:18.485082688 -0300
+@@ -93,6 +93,10 @@
+ 
+         self.menu_bar
+             .consume_shortcuts(egui_ctx, &mut self.dialogs, player.as_deref_mut());
++        #[cfg(target_os = "linux")]
++        if crate::mugetsu::plays_aqw() {
++            self.show_linux_titlebar(egui_ui);
++        }
+         if show_menu {
+             self.menu_bar
+                 .show(&locale, egui_ui, &mut self.dialogs, player.as_deref_mut());
+@@ -139,6 +143,56 @@
+         };
+     }
+ 
++    #[cfg(target_os = "linux")]
++    fn show_linux_titlebar(&mut self, ui: &mut egui::Ui) {
++        let title = crate::window_title();
++        egui::Frame::new()
++            .fill(ui.visuals().window_fill())
++            .inner_margin(egui::Margin::symmetric(6, 2))
++            .show(ui, |ui| {
++                ui.set_min_height(MENU_HEIGHT as f32 - 4.0);
++                ui.horizontal(|ui| {
++                    ui.label(egui::RichText::new(title).strong());
++                    ui.menu_button("☰", |ui| {
++                        ui.label(egui::RichText::new("Graphics").strong());
++                        let selected = crate::mugetsu::saved_graphics();
++                        if ui
++                            .radio(selected.is_none(), "Automatic (recommended)")
++                            .clicked()
++                        {
++                            crate::mugetsu::save_graphics(None);
++                            crate::mugetsu::restart();
++                        }
++                        if ui
++                            .radio(selected == Some(crate::mugetsu::Graphics::Vulkan), "Vulkan")
++                            .clicked()
++                        {
++                            crate::mugetsu::save_graphics(Some(crate::mugetsu::Graphics::Vulkan));
++                            crate::mugetsu::restart();
++                        }
++                        if ui
++                            .radio(selected == Some(crate::mugetsu::Graphics::Gl), "OpenGL")
++                            .clicked()
++                        {
++                            crate::mugetsu::save_graphics(Some(crate::mugetsu::Graphics::Gl));
++                            crate::mugetsu::restart();
++                        }
++                        ui.separator();
++                        let mut interpolation = ruffle_core::frame_interpolation::enabled();
++                        if ui
++                            .checkbox(&mut interpolation, "Frame interpolation")
++                            .clicked()
++                        {
++                            ruffle_core::frame_interpolation::set_enabled(interpolation);
++                            crate::mugetsu::save_interpolation(interpolation);
++                        }
++                        ui.separator();
++                        ui.label(format!("Mugetsu {}", crate::mugetsu::VERSION));
++                    });
++                });
++            });
++    }
++
+     pub fn show_context_menu(
+         &mut self,
+         menu: Vec<ruffle_core::ContextMenuItem>,
+--- a/desktop/src/gui/controller.rs	2026-10-17 14:39:38.105766649 -0300
++++ b/desktop/src/gui/controller.rs	2026-10-17 14:39:50.852348214 -0300
+@@ -329,7 +329,16 @@
+     }
+ 
+     pub fn height_offset(&self) -> f64 {
+-        if self.window.fullscreen().is_some() || self.no_gui {
++        if self.window.fullscreen().is_some() {
++            0.0
++        } else if self.no_gui {
++            #[cfg(target_os = "linux")]
++            if crate::mugetsu::plays_aqw() {
++                MENU_HEIGHT as f64 * self.window.scale_factor()
++            } else {
++                0.0
++            }
++            #[cfg(not(target_os = "linux"))]
+             0.0
+         } else {
+             MENU_HEIGHT as f64 * self.window.scale_factor()
+@@ -402,6 +411,23 @@
+ 
+         let raw_input = self.egui_winit.take_egui_input(&self.window);
+         let show_menu = self.window.fullscreen().is_none() && !self.no_gui;
++        let titlebar_height = if self.window.fullscreen().is_none()
++            && self.no_gui
++            && {
++                #[cfg(target_os = "linux")]
++                {
++                    crate::mugetsu::plays_aqw()
++                }
++                #[cfg(not(target_os = "linux"))]
++                {
++                    false
++                }
++            }
++        {
++            MENU_HEIGHT as f64 * self.window.scale_factor()
++        } else {
++            0.0
++        };
+         let mut full_output = self.egui_winit.egui_ctx().run_ui(raw_input, |ui| {
+             self.gui.update(
+                 self.egui_winit.egui_ctx(),
+@@ -411,7 +437,7 @@
+                 if show_menu {
+                     MENU_HEIGHT as f64 * self.window.scale_factor()
+                 } else {
+-                    0.0
++                    titlebar_height
+                 },
+             );
+         });
+--- a/desktop/src/app.rs	2026-10-17 14:39:38.107230245 -0300
++++ b/desktop/src/app.rs	2026-10-17 14:39:50.852390747 -0300
+@@ -648,7 +648,16 @@
+     }
+ 
+     fn on_metadata(&mut self, swf_header: HeaderExt) {
+-        let height_offset = if self.gui.window().fullscreen().is_some() || self.no_gui {
++        let height_offset = if self.gui.window().fullscreen().is_some() {
++            0.0
++        } else if self.no_gui {
++            #[cfg(target_os = "linux")]
++            if crate::mugetsu::plays_aqw() {
++                MENU_HEIGHT as f64
++            } else {
++                0.0
++            }
++            #[cfg(not(target_os = "linux"))]
+             0.0
+         } else {
+             MENU_HEIGHT as f64
