@@ -48,7 +48,9 @@ development libraries for Wayland/X11. From this folder, run:
 
 The result is `build/out/Mugetsu`. Use `./build.sh --no-pgo` to skip the speed profile, or
 `./build.sh --prepare-only` to fetch and patch the source without compiling. The binary uses
-Ruffle's normal winit Wayland/X11 backend and native window decorations.
+Ruffle's normal winit Wayland/X11 backend. On Linux, Mugetsu draws its own compact title bar so
+the graphics menu works consistently under both Wayland and X11; it offers Automatic, Vulkan,
+OpenGL, and frame interpolation. DirectX 12 is only shown by the Windows build.
 
 ## What the changes do
 
