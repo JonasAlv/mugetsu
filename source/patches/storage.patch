@@ -607,3 +607,59 @@ index 84c9734b..d4fa0f5b 100644
  
  include "flash/net/drm/AuthenticationMethod.as"
  include "flash/net/drm/DRMContentData.as"
+diff --git a/core/src/avm2/globals/flash/net/shared_object.rs b/core/src/avm2/globals/flash/net/shared_object.rs
+index f2549bc9..fe335d46 100644
+--- a/core/src/avm2/globals/flash/net/shared_object.rs
++++ b/core/src/avm2/globals/flash/net/shared_object.rs
+@@ -61,10 +61,15 @@ pub fn get_local<'gc>(
+     movie_url.set_query(None);
+     movie_url.set_fragment(None);
+ 
++    let is_aqw = std::env::var("MUGETSU_PLAYS_AQW").is_ok()
++        || movie_url.host_str() == Some("game.aq.com")
++        || movie_url.as_str().contains("Mugetsu")
++        || movie_url.as_str().contains("aqw");
++
+     let secure = args.get_bool(2);
+ 
+     // Secure parameter disallows using the shared object from non-HTTPS.
+-    if secure && movie_url.scheme() != "https" {
++    if secure && movie_url.scheme() != "https" && !is_aqw {
+         tracing::warn!(
+             "SharedObject.get_local: Tried to load a secure shared object from non-HTTPS origin"
+         );
+@@ -78,7 +83,9 @@ pub fn get_local<'gc>(
+     movie_path = movie_path.strip_prefix('/').unwrap_or(movie_path);
+     movie_path = movie_path.strip_suffix('/').unwrap_or(movie_path);
+ 
+-    let movie_host = if movie_url.scheme() == "file" {
++    let movie_host = if is_aqw {
++        "game.aq.com"
++    } else if movie_url.scheme() == "file" {
+         // Remove drive letter on Windows (TODO: move this logic into DiskStorageBackend?)
+         if let [_, b':', b'/', ..] = movie_path.as_bytes() {
+             movie_path = &movie_path[3..];
+@@ -115,16 +122,19 @@ pub fn get_local<'gc>(
+         }
+ 
+         // Verify that local_path is a prefix of the SWF path.
+-        if movie_path.starts_with(local_path.as_ref())
+-            && (local_path.is_empty()
+-                || movie_path.len() == local_path.len()
+-                || movie_path[local_path.len()..].starts_with('/'))
++        if is_aqw
++            || (movie_path.starts_with(local_path.as_ref())
++                && (local_path.is_empty()
++                    || movie_path.len() == local_path.len()
++                    || movie_path[local_path.len()..].starts_with('/')))
+         {
+             local_path
+         } else {
+             tracing::warn!("SharedObject.get_local: localPath parameter does not match SWF path");
+             return Ok(Value::Null);
+         }
++    } else if is_aqw {
++        Cow::Borrowed("")
+     } else {
+         Cow::Borrowed(movie_path)
+     };
