@@ -1,0 +1,609 @@
+diff --git a/core/src/avm2/globals/flash.rs b/core/src/avm2/globals/flash.rs
+index 909f521b..b54f5480 100644
+--- a/core/src/avm2/globals/flash.rs
++++ b/core/src/avm2/globals/flash.rs
+@@ -6,6 +6,7 @@ pub mod display;
+ pub mod display3D;
+ pub mod events;
+ pub mod external;
++pub mod filesystem;
+ pub mod filters;
+ pub mod geom;
+ pub mod media;
+diff --git a/core/src/avm2/globals/flash/filesystem.rs b/core/src/avm2/globals/flash/filesystem.rs
+new file mode 100644
+index 00000000..d6b77e31
+--- /dev/null
++++ b/core/src/avm2/globals/flash/filesystem.rs
+@@ -0,0 +1,3 @@
++//! `flash.filesystem` namespace
++
++pub mod file;
+diff --git a/core/src/avm2/globals/flash/filesystem/File.as b/core/src/avm2/globals/flash/filesystem/File.as
+index 3d10828e..34b5fe64 100644
+--- a/core/src/avm2/globals/flash/filesystem/File.as
++++ b/core/src/avm2/globals/flash/filesystem/File.as
+@@ -1,8 +1,4 @@
+ package flash.filesystem {
+-    import __ruffle__.stub_constructor;
+-    import __ruffle__.stub_getter;
+-    import __ruffle__.stub_method;
+-
+     import flash.net.FileReference;
+ 
+     [API("661")]
+@@ -11,101 +7,173 @@ package flash.filesystem {
+         private static var _applicationStorageDirectory:File = null;
+         private static var _documentsDirectory:File = null;
+         private static var _userDirectory:File = null;
++        private static var _desktopDirectory:File = null;
++
++        private var _path:String = "";
+ 
+         public function File(path:String = null) {
+-            stub_constructor("flash.filesystem.File");
++            super();
++            if (path != null) {
++                this._path = normalizePath(path);
++            }
+         }
+ 
+-        public static function get applicationDirectory():File {
+-            stub_getter("flash.filesystem.File", "applicationDirectory");
++        private static function normalizePath(path:String):String {
++            if (path == null) return "";
++            var p:String = path.split("\\").join("/");
++            while (p.indexOf("//") != -1) {
++                p = p.split("//").join("/");
++            }
++            return p;
++        }
+ 
++        public static function get applicationDirectory():File {
+             if (_applicationDirectory === null) {
+-                _applicationDirectory = new File();
++                _applicationDirectory = new File(getAppDir());
+             }
+-
+             return _applicationDirectory;
+         }
+ 
+         public static function get applicationStorageDirectory():File {
+-            stub_getter("flash.filesystem.File", "applicationStorageDirectory");
+-
+             if (_applicationStorageDirectory === null) {
+-                _applicationStorageDirectory = new File();
++                _applicationStorageDirectory = new File(getAppStorageDir());
+             }
+-
+             return _applicationStorageDirectory;
+         }
+ 
+         public static function get documentsDirectory():File {
+-            stub_getter("flash.filesystem.File", "documentsDirectory");
+-
+             if (_documentsDirectory === null) {
+-                _documentsDirectory = new File();
++                _documentsDirectory = new File(getDocumentsDir());
+             }
+-
+             return _documentsDirectory;
+         }
+ 
+         public static function get userDirectory():File {
+-            stub_getter("flash.filesystem.File", "userDirectory");
+-
+             if (_userDirectory === null) {
+-                _userDirectory = new File();
++                _userDirectory = new File(getUserDir());
+             }
+-
+             return _userDirectory;
+         }
+ 
+-        public static function get separator():String {
+-            stub_getter("flash.filesystem.File", "separator");
++        public static function get desktopDirectory():File {
++            if (_desktopDirectory === null) {
++                _desktopDirectory = new File(getUserDir());
++            }
++            return _desktopDirectory;
++        }
+ 
++        public static function get separator():String {
+             return "/";
+         }
+ 
+         public function resolvePath(path:String):File {
+-            stub_method("flash.filesystem.File", "resolvePath");
+-
+-            return new File();
++            if (path == null || path.length == 0) {
++                return new File(this._path);
++            }
++            var b:String = this._path;
++            var p:String = normalizePath(path);
++            if (p.indexOf("/") == 0) {
++                return new File(p);
++            }
++            if (b.length > 0 && b.charAt(b.length - 1) != "/") {
++                b += "/";
++            }
++            return new File(b + p);
+         }
+ 
+         public function get exists():Boolean {
+-            stub_getter("flash.filesystem.File", "exists");
++            return fsExists(this._path);
++        }
+ 
+-            return false;
++        public function get isDirectory():Boolean {
++            return fsIsDirectory(this._path);
+         }
+ 
+         public function get nativePath():String {
+-            stub_getter("flash.filesystem.File", "nativePath");
+-
+-            return "";
++            return this._path;
+         }
+ 
+         public function get url():String {
+-            stub_getter("flash.filesystem.File", "url");
++            return "file://" + this._path;
++        }
++
++        override public function get name():String {
++            var p:String = this._path;
++            if (p.length > 0 && p.charAt(p.length - 1) == "/") {
++                p = p.substr(0, p.length - 1);
++            }
++            var idx:int = p.lastIndexOf("/");
++            if (idx != -1) {
++                return p.substr(idx + 1);
++            }
++            return p;
++        }
++
++        public function get parent():File {
++            var p:String = this._path;
++            if (p.length > 0 && p.charAt(p.length - 1) == "/") {
++                p = p.substr(0, p.length - 1);
++            }
++            var idx:int = p.lastIndexOf("/");
++            if (idx > 0) {
++                return new File(p.substr(0, idx));
++            }
++            return null;
++        }
+ 
+-            return "";
++        public function get permissionStatus():String {
++            return "granted";
+         }
+ 
+         public function canonicalize():void {
+-            stub_method("flash.filesystem.File", "canonicalize");
++            this._path = normalizePath(this._path);
+         }
+ 
+         public function createDirectory():void {
+-            stub_method("flash.filesystem.File", "createDirectory");
++            fsCreateDirectory(this._path);
++        }
++
++        public function deleteFile():void {
++            fsDeleteFile(this._path);
+         }
+ 
+         public function deleteDirectory(deleteDirectoryContents:Boolean = false):void {
+-            stub_method("flash.filesystem.File", "deleteDirectory");
++            fsDeleteDirectory(this._path, deleteDirectoryContents);
+         }
+ 
+         public function getDirectoryListing():Array {
+-            stub_method("flash.filesystem.File", "getDirectoryListing");
+-
+-            return [];
++            var names:Array = fsListDirectory(this._path);
++            var result:Array = [];
++            if (names != null) {
++                for (var i:int = 0; i < names.length; i++) {
++                    result.push(this.resolvePath(names[i]));
++                }
++            }
++            return result;
+         }
+ 
+         public function moveTo(newLocation:FileReference, overwrite:Boolean = false):void {
+-            stub_method("flash.filesystem.File", "moveTo");
++            if (newLocation != null && newLocation is File) {
++                var targetPath:String = File(newLocation).nativePath;
++                fsMoveFile(this._path, targetPath, overwrite);
++                this._path = targetPath;
++            }
+         }
++
++        // Native methods defined in crate::avm2::globals::flash::filesystem::file
++        private static native function getAppStorageDir():String;
++        private static native function getAppDir():String;
++        private static native function getDocumentsDir():String;
++        private static native function getUserDir():String;
++        private static native function fsExists(path:String):Boolean;
++        private static native function fsIsDirectory(path:String):Boolean;
++        private static native function fsCreateDirectory(path:String):void;
++        private static native function fsDeleteFile(path:String):void;
++        private static native function fsDeleteDirectory(path:String, recursive:Boolean):void;
++        private static native function fsMoveFile(source:String, dest:String, overwrite:Boolean):void;
++        private static native function fsListDirectory(path:String):Array;
++
++        internal static native function fsReadFile(path:String):String;
++        internal static native function fsWriteFile(path:String, content:String, append:Boolean = false):void;
+     }
+ }
+diff --git a/core/src/avm2/globals/flash/filesystem/FileMode.as b/core/src/avm2/globals/flash/filesystem/FileMode.as
+new file mode 100644
+index 00000000..9243b876
+--- /dev/null
++++ b/core/src/avm2/globals/flash/filesystem/FileMode.as
+@@ -0,0 +1,9 @@
++package flash.filesystem {
++    [API("661")]
++    public final class FileMode {
++        public static const APPEND:String = "append";
++        public static const READ:String = "read";
++        public static const UPDATE:String = "update";
++        public static const WRITE:String = "write";
++    }
++}
+diff --git a/core/src/avm2/globals/flash/filesystem/FileStream.as b/core/src/avm2/globals/flash/filesystem/FileStream.as
+index 185721c3..2f661c9d 100644
+--- a/core/src/avm2/globals/flash/filesystem/FileStream.as
++++ b/core/src/avm2/globals/flash/filesystem/FileStream.as
+@@ -1,18 +1,94 @@
+ package flash.filesystem {
+-    import __ruffle__.stub_method;
+-
+     import flash.events.EventDispatcher;
+ 
+-    // TODO this class should implement IDataInput and IDataOutput
+-
+     [API("661")]
+     public class FileStream extends EventDispatcher {
++        private var _file:File = null;
++        private var _mode:String = "read";
++        private var _buffer:String = "";
++        private var _position:uint = 0;
++
+         public function FileStream() {
+             super();
+         }
+ 
++        public function open(file:File, fileMode:String):void {
++            this._file = file;
++            this._mode = (fileMode != null) ? fileMode.toLowerCase() : "read";
++            if (this._mode == "read" || this._mode == "update") {
++                if (file != null && file.exists) {
++                    this._buffer = File.fsReadFile(file.nativePath);
++                } else {
++                    this._buffer = "";
++                }
++                this._position = 0;
++            } else if (this._mode == "append") {
++                this._buffer = "";
++                this._position = 0;
++            } else {
++                // "write"
++                this._buffer = "";
++                this._position = 0;
++            }
++        }
++
++        public function openAsync(file:File, fileMode:String):void {
++            this.open(file, fileMode);
++        }
++
++        public function get bytesAvailable():uint {
++            if (this._buffer == null) return 0;
++            if (this._position >= this._buffer.length) return 0;
++            return this._buffer.length - this._position;
++        }
++
++        public function get position():uint {
++            return this._position;
++        }
++
++        public function set position(value:uint):void {
++            this._position = value;
++        }
++
++        public function readUTFBytes(length:uint):String {
++            if (this._buffer == null || this._position >= this._buffer.length) {
++                return "";
++            }
++            var avail:uint = this._buffer.length - this._position;
++            var toRead:uint = (length < avail) ? length : avail;
++            var chunk:String = this._buffer.substr(this._position, toRead);
++            this._position += chunk.length;
++            return chunk;
++        }
++
++        public function writeUTFBytes(value:String):void {
++            if (value != null && value.length > 0) {
++                if (this._mode == "append") {
++                    if (this._file != null) {
++                        File.fsWriteFile(this._file.nativePath, value, true);
++                    }
++                } else {
++                    this._buffer += value;
++                }
++            }
++        }
++
++        public function writeBytes(bytes:*, offset:uint = 0, length:uint = 0):void {
++            if (bytes != null) {
++                var s:String = bytes.toString();
++                writeUTFBytes(s);
++            }
++        }
++
+         public function close():void {
+-            stub_method("flash.filesystem.FileStream", "close");
++            if (this._file != null && this._buffer != null) {
++                if (this._mode == "write" || this._mode == "update") {
++                    File.fsWriteFile(this._file.nativePath, this._buffer, false);
++                }
++            }
++            this._file = null;
++            this._buffer = "";
++            this._position = 0;
+         }
+     }
+ }
+diff --git a/core/src/avm2/globals/flash/filesystem/file.rs b/core/src/avm2/globals/flash/filesystem/file.rs
+new file mode 100644
+index 00000000..ea1dc10c
+--- /dev/null
++++ b/core/src/avm2/globals/flash/filesystem/file.rs
+@@ -0,0 +1,228 @@
++//! `flash.filesystem.File` native methods
++
++use crate::avm2::array::ArrayStorage;
++use crate::avm2::function::FunctionArgs;
++use crate::avm2::object::ArrayObject;
++use crate::avm2::parameters::ParametersExt;
++use crate::avm2::{Activation, AvmString, Error, Value};
++use std::fs;
++use std::path::{Path, PathBuf};
++
++fn get_storage_root() -> PathBuf {
++    if let Ok(dir) = std::env::var("AQW_STORAGE_DIR") {
++        if !dir.is_empty() {
++            return PathBuf::from(dir);
++        }
++    }
++    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
++        if !config_home.is_empty() {
++            return PathBuf::from(config_home).join("aqw-mugetsu");
++        }
++    }
++    if let Ok(home) = std::env::var("HOME") {
++        if !home.is_empty() {
++            return PathBuf::from(home).join(".config").join("aqw-mugetsu");
++        }
++    }
++    if let Ok(appdata) = std::env::var("APPDATA") {
++        if !appdata.is_empty() {
++            return PathBuf::from(appdata).join("aqw-mugetsu");
++        }
++    }
++    PathBuf::from("./aqw-mugetsu")
++}
++
++pub fn get_app_storage_dir<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    _args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let p = get_storage_root();
++    let s = p.to_string_lossy().to_string();
++    Ok(AvmString::new_utf8(activation.gc(), s).into())
++}
++
++pub fn get_app_dir<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    _args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
++    let s = cur.to_string_lossy().to_string();
++    Ok(AvmString::new_utf8(activation.gc(), s).into())
++}
++
++pub fn get_documents_dir<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    _args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let mut p = PathBuf::from(".");
++    if let Ok(home) = std::env::var("HOME") {
++        let doc = PathBuf::from(&home).join("Documents");
++        if doc.exists() {
++            p = doc;
++        } else {
++            p = PathBuf::from(home);
++        }
++    } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
++        let doc = PathBuf::from(&userprofile).join("Documents");
++        if doc.exists() {
++            p = doc;
++        } else {
++            p = PathBuf::from(userprofile);
++        }
++    }
++    Ok(AvmString::new_utf8(activation.gc(), p.to_string_lossy().to_string()).into())
++}
++
++pub fn get_user_dir<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    _args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let home = std::env::var("HOME")
++        .or_else(|_| std::env::var("USERPROFILE"))
++        .unwrap_or_else(|_| ".".to_string());
++    Ok(AvmString::new_utf8(activation.gc(), home).into())
++}
++
++pub fn fs_exists<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let exists = Path::new(path_str.as_ref()).exists();
++    Ok(Value::Bool(exists))
++}
++
++pub fn fs_is_directory<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let is_dir = Path::new(path_str.as_ref()).is_dir();
++    Ok(Value::Bool(is_dir))
++}
++
++pub fn fs_create_directory<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let _ = fs::create_dir_all(path_str.as_ref());
++    Ok(Value::Undefined)
++}
++
++pub fn fs_delete_file<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let _ = fs::remove_file(path_str.as_ref());
++    Ok(Value::Undefined)
++}
++
++pub fn fs_delete_directory<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let recursive = args.get_bool(1);
++    if recursive {
++        let _ = fs::remove_dir_all(path_str.as_ref());
++    } else {
++        let _ = fs::remove_dir(path_str.as_ref());
++    }
++    Ok(Value::Undefined)
++}
++
++pub fn fs_move_file<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let src = args.get_string_non_null(activation, 0, "source")?;
++    let dst = args.get_string_non_null(activation, 1, "dest")?;
++    let src_str = src.to_utf8_lossy();
++    let dst_str = dst.to_utf8_lossy();
++    let _ = fs::rename(src_str.as_ref(), dst_str.as_ref());
++    Ok(Value::Undefined)
++}
++
++pub fn fs_list_directory<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let p = Path::new(path_str.as_ref());
++
++    let mut names: Vec<Value<'gc>> = Vec::new();
++    if let Ok(entries) = fs::read_dir(p) {
++        for entry in entries.flatten() {
++            if let Ok(file_name) = entry.file_name().into_string() {
++                let avm_s = AvmString::new_utf8(activation.gc(), file_name);
++                names.push(avm_s.into());
++            }
++        }
++    }
++
++    let storage = ArrayStorage::from_iter(names);
++    Ok(ArrayObject::from_storage(activation.context, storage).into())
++}
++
++pub fn fs_read_file<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let path_str = path.to_utf8_lossy();
++    let content = fs::read_to_string(path_str.as_ref()).unwrap_or_default();
++    Ok(AvmString::new_utf8(activation.gc(), content).into())
++}
++
++pub fn fs_write_file<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    use std::io::Write;
++    let path = args.get_string_non_null(activation, 0, "path")?;
++    let content = args.get_string_non_null(activation, 1, "content")?;
++    let append = args.get_bool(2);
++
++    let path_str = path.to_utf8_lossy();
++    let content_str = content.to_utf8_lossy();
++
++    let p = Path::new(path_str.as_ref());
++    if let Some(parent) = p.parent() {
++        let _ = fs::create_dir_all(parent);
++    }
++
++    let mut opts = fs::OpenOptions::new();
++    opts.create(true).write(true);
++    if append {
++        opts.append(true);
++    } else {
++        opts.truncate(true);
++    }
++
++    if let Ok(mut file) = opts.open(p) {
++        let _ = file.write_all(content_str.as_bytes());
++    }
++
++    Ok(Value::Undefined)
++}
+diff --git a/core/src/avm2/globals/globals.as b/core/src/avm2/globals/globals.as
+index 84c9734b..d4fa0f5b 100644
+--- a/core/src/avm2/globals/globals.as
++++ b/core/src/avm2/globals/globals.as
+@@ -358,6 +358,7 @@ include "flash/net/XMLSocket.as"
+ 
+ include "flash/filesystem/File.as" // File extends FileReference
+ include "flash/filesystem/FileStream.as"
++include "flash/filesystem/FileMode.as"
+ 
+ include "flash/net/drm/AuthenticationMethod.as"
+ include "flash/net/drm/DRMContentData.as"
