@@ -10544,7 +10544,7 @@ index 000000000..d9b2c51ff
 +    std::process::exit(0);
 +}
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 2265dc24c..91a3223d3 100644
+index 2265dc24..a0ae12dd 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
 @@ -13,11 +13,14 @@ mod custom_event;
@@ -10689,7 +10689,7 @@ index 2265dc24c..91a3223d3 100644
  fn panic_hook(info: &PanicHookInfo) {
      CALLSTACK.with(|callstack| {
          if let Some(callstack) = &*callstack.borrow() {
-@@ -85,60 +150,125 @@ fn panic_hook(info: &PanicHookInfo) {
+@@ -85,60 +150,162 @@ fn panic_hook(info: &PanicHookInfo) {
  
      let message = info.payload_as_str().unwrap_or("panic occurred");
  
@@ -10766,10 +10766,6 @@ index 2265dc24c..91a3223d3 100644
 -        RENDER_INFO.with(|i| {
 -            if let Some(render_info) = i.take() {
 -                extra_info.push(format!("### Render Info\n{render_info}\n"));
--            }
--        });
--        if !extra_info.is_empty() {
--            params.push(("extra_info", extra_info.join("\n")));
 +        .set_title("Mugetsu")
 +        .set_description(description)
 +        .set_buttons(rfd::MessageButtons::Ok)
@@ -10792,12 +10788,57 @@ index 2265dc24c..91a3223d3 100644
 +    }
 +    let gui = args.iter().any(|a| is(a, "--gui"));
 +    args.retain(|a| !is(a, "--gui"));
-+    let has_movie = Opt::try_parse_from(&args).map_or(true, |opt| opt.movie_url.is_some());
-+    if has_movie {
-+        // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
-+        return args;
++    let plain_ruffle = args.iter().any(|a| is(a, "--plain-ruffle"));
++    args.retain(|a| !is(a, "--plain-ruffle"));
++    let mut movie_target: Option<std::ffi::OsString> = None;
++    if !plain_ruffle {
++        let mut found_idx = None;
++        for (i, arg) in args.iter().enumerate().skip(1) {
++            if let Some(s) = arg.to_str() {
++                if !s.starts_with('-') {
++                    if let Some(prev) = args.get(i.saturating_sub(1)) {
++                        let prev_str = prev.to_str().unwrap_or("");
++                        if ["--graphics", "-g", "--power", "-p", "--width", "--height", "--scale", "--volume", "--player-version"].contains(&prev_str) {
++                            continue;
++                        }
++                    }
++                    if s.ends_with(".swf") || s.starts_with("http://") || s.starts_with("https://") || s.starts_with("file://") {
++                        found_idx = Some(i);
++                        break;
++                    }
++                }
+             }
+-        });
+-        if !extra_info.is_empty() {
+-            params.push(("extra_info", extra_info.join("\n")));
+         }
+-        if let Ok(url) = Url::parse_with_params(
+-            "https://github.com/ruffle-rs/ruffle/issues/new?assignees=&labels=bug&template=crash_report.yml",
+-            &params,
+-        ) {
+-            let _ = webbrowser::open(url.as_str());
++        if let Some(i) = found_idx {
++            movie_target = Some(args.remove(i));
++        }
 +    }
++    if plain_ruffle {
++        let has_movie = Opt::try_parse_from(&args).map_or(true, |opt| opt.movie_url.is_some());
++        if has_movie {
++            // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
++            return args;
++        }
++    }
++    let final_movie = movie_target.unwrap_or_else(|| {
++        if std::path::Path::new("build/MugetsuMod.swf").exists() {
++            "build/MugetsuMod.swf".into()
++        } else if std::path::Path::new("MugetsuMod.swf").exists() {
++            "MugetsuMod.swf".into()
++        } else {
++            AQW_LOADER_URL.into()
++        }
++    });
 +    mugetsu::set_plays_aqw();
++    unsafe { env::set_var("MUGETSU_PLAYS_AQW", "1") };
 +    ruffle_core::frame_interpolation::set_enabled(mugetsu::saved_interpolation());
 +    // Flash-style edge smoothing by default (much faster on laptops; MSAA in the menu).
 +    ruffle_render::tessellator::set_flash_aa(mugetsu::saved_flash_edges().unwrap_or(true));
@@ -10845,16 +10886,11 @@ index 2265dc24c..91a3223d3 100644
 +        ("--no-gui", None, None),
 +        ("--graphics", Some("-g"), Some(graphics)),
 +    ];
-+    let mut full = vec![args[0].clone(), AQW_LOADER_URL.into()];
++    let mut full = vec![args[0].clone(), final_movie];
 +    for (flag, short, value) in defaults {
 +        if (*flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
 +            continue;
-         }
--        if let Ok(url) = Url::parse_with_params(
--            "https://github.com/ruffle-rs/ruffle/issues/new?assignees=&labels=bug&template=crash_report.yml",
--            &params,
--        ) {
--            let _ = webbrowser::open(url.as_str());
++        }
 +        full.push(flag.into());
 +        if let Some(value) = value {
 +            full.push(value.into());
@@ -10865,7 +10901,7 @@ index 2265dc24c..91a3223d3 100644
  }
  
  fn main() -> Result<(), Error> {
-@@ -147,11 +277,19 @@ fn main() -> Result<(), Error> {
+@@ -147,11 +314,19 @@ fn main() -> Result<(), Error> {
          prev_hook(info);
          panic_hook(info);
      }));
@@ -10886,7 +10922,7 @@ index 2265dc24c..91a3223d3 100644
  
      #[cfg(feature = "shell-completions")]
      if let Some(shell) = opt.completions {
-@@ -163,6 +301,7 @@ fn main() -> Result<(), Error> {
+@@ -163,6 +338,7 @@ fn main() -> Result<(), Error> {
      let preferences = GlobalPreferences::load(opt)?;
  
      let logs_path = &preferences.cli.cache_directory.join("log");
@@ -10894,7 +10930,7 @@ index 2265dc24c..91a3223d3 100644
      let log_path = preferences.log_filename_pattern().create_path(logs_path);
      if let Some(parent) = log_path.parent() {
          std::fs::create_dir_all(parent)?;
-@@ -176,11 +315,19 @@ fn main() -> Result<(), Error> {
+@@ -176,11 +352,19 @@ fn main() -> Result<(), Error> {
      let (non_blocking_file, _file_guard) = tracing_appender::non_blocking(File::create(log_path)?);
      let (non_blocking_stdout, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
  
@@ -10919,7 +10955,7 @@ index 2265dc24c..91a3223d3 100644
  
      let subscriber = tracing_subscriber::registry()
          .with(env_filter)
-@@ -195,6 +342,23 @@ fn main() -> Result<(), Error> {
+@@ -195,6 +379,23 @@ fn main() -> Result<(), Error> {
  
      subscriber.init();
  
