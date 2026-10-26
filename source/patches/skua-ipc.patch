@@ -246,10 +246,9 @@ index b37bdd8..f07b011 100644
              }));
 diff --git a/desktop/src/skua_ipc.rs b/desktop/src/skua_ipc.rs
 new file mode 100644
-index 0000000..2cf0fce
 --- /dev/null
 +++ b/desktop/src/skua_ipc.rs
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,652 @@
 +//! Skua IPC bridge and X11 window embedding for VibeSkua on Linux.
 +
 +use crate::custom_event::RuffleEvent;
@@ -336,6 +335,22 @@ index 0000000..2cf0fce
 +    let Ok(socket_path) = std::env::var("MUGETSU_SKUA_SOCKET") else {
 +        return;
 +    };
++
++    #[cfg(target_os = "linux")]
++    {
++        unsafe extern "C" {
++            fn prctl(
++                option: std::os::raw::c_int,
++                arg2: std::os::raw::c_ulong,
++                arg3: std::os::raw::c_ulong,
++                arg4: std::os::raw::c_ulong,
++                arg5: std::os::raw::c_ulong,
++            ) -> std::os::raw::c_int;
++        }
++        unsafe {
++            prctl(1, 9, 0, 0, 0);
++        }
++    }
 +
 +    #[cfg(unix)]
 +    {
@@ -456,13 +471,12 @@ index 0000000..2cf0fce
 +                                    }
 +                                }
 +                                "quit" => {
-+                                    let _ = event_loop_proxy.send_event(RuffleEvent::ExitRequested);
-+                                    break;
++                                    std::process::exit(0);
 +                                }
 +                                _ => {}
 +                            }
 +                        }
-+                        let _ = event_loop_proxy.send_event(RuffleEvent::ExitRequested);
++                        std::process::exit(0);
 +                    })
 +                    .ok();
 +            }
