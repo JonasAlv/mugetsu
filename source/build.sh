@@ -59,6 +59,9 @@ run git -C "$ruffle" -c advice.detachedHead=false checkout -q FETCH_HEAD
 
 # 2. Mugetsu's changes to Ruffle.
 run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/ruffle.patch"
+if [[ -f "$root/patches/skua-ipc.patch" ]]; then
+    run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/skua-ipc.patch"
+fi
 
 # 3. The five libraries Mugetsu changes, from crates.io, patched into ruffle/patches/.
 crates=(
