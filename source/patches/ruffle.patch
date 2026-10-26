@@ -6527,10 +6527,10 @@ index 675ef3a78..c8db8b9ce 100644
 +    );
 +}
 diff --git a/core/src/tessellation_cache.rs b/core/src/tessellation_cache.rs
-index cacd85384..bed41fdf5 100644
+index cacd85384..36fcffc50 100644
 --- a/core/src/tessellation_cache.rs
 +++ b/core/src/tessellation_cache.rs
-@@ -1,19 +1,179 @@
+@@ -1,19 +1,184 @@
 -use ruffle_render::backend::ShapeHandle;
 +use ruffle_render::backend::{NO_STRETCH, ShapeHandle, Stretch};
 +use ruffle_render::tessellator::{EdgeMode, edge_mode};
@@ -6698,7 +6698,12 @@ index cacd85384..bed41fdf5 100644
 +/// drawn without their gear). Only used while the GPU's memory is nearly full. Returns how many
 +/// tessellations were freed.
 +pub fn evict_unused(unused_secs: u32) -> usize {
-+    let cutoff = clock().saturating_sub(unused_secs);
++    let now = clock();
++    let cutoff = if now <= unused_secs {
++        now.saturating_sub(2).max(1)
++    } else {
++        now - unused_secs
++    };
 +    REGISTRY.with(|registry| {
 +        let mut registry = registry.borrow_mut();
 +        let mut freed = 0;
@@ -6717,7 +6722,7 @@ index cacd85384..bed41fdf5 100644
  }
  
  /// A cache for tessellated shapes at different scales, using a simple LRU eviction policy.
-@@ -29,25 +189,105 @@ impl TessellationCache {
+@@ -29,25 +194,105 @@ impl TessellationCache {
          Self {
              entries: std::array::from_fn(|_| None),
              len: 0,
@@ -6829,7 +6834,7 @@ index cacd85384..bed41fdf5 100644
                      // Choose the cached entry with the smallest deviation from the target scale.
                      let deviation = f32::abs(ratio - 1.0);
  
-@@ -67,10 +307,11 @@ impl TessellationCache {
+@@ -67,10 +312,11 @@ impl TessellationCache {
      ///
      /// If the cache is full, the least recently used entry will be evicted to make room for the new entry.
      /// We assume that the caller has already checked that the new entry is not too similar to existing entries.
@@ -6844,7 +6849,7 @@ index cacd85384..bed41fdf5 100644
              self.len += 1;
              return;
          }
-@@ -80,7 +321,34 @@ impl TessellationCache {
+@@ -80,7 +326,34 @@ impl TessellationCache {
              self.entries[i - 1] = self.entries[i].take();
          }
  
@@ -6880,7 +6885,7 @@ index cacd85384..bed41fdf5 100644
      }
  
      /// Returns the number of cached entries currently stored in the cache.
-@@ -90,6 +358,9 @@ impl TessellationCache {
+@@ -90,6 +363,9 @@ impl TessellationCache {
  
      /// Moves the entry at the given index to the most recently used position and returns its shape handle.
      fn touch_entry(&mut self, index: usize) -> ShapeHandle {
@@ -8669,7 +8674,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a3410740e..f26876886 100644
+index a3410740e..ba7158bb9 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
 @@ -15,7 +15,7 @@ use ruffle_core::swf::HeaderExt;
@@ -8697,7 +8702,7 @@ index a3410740e..f26876886 100644
      min_window_size: LogicalSize<u32>,
      max_window_size: PhysicalSize<u32>,
      no_gui: bool,
-@@ -43,6 +51,350 @@ struct MainWindow {
+@@ -43,6 +51,352 @@ struct MainWindow {
      time: Instant,
      next_frame_time: Option<Instant>,
      event_loop_proxy: EventLoopProxy<RuffleEvent>,
@@ -8800,12 +8805,14 @@ index a3410740e..f26876886 100644
 +        .unwrap_or_default();
 +        let (encoder_backlog, in_flight) = wgpu_core::aqw_stats();
 +        let mut commit = 0usize;
-+        let mut zero = [0usize; 7];
++        let mut rss = 0usize;
++        let mut zero = [0usize; 6];
 +        // SAFETY: plain out-pointers.
 +        unsafe {
-+            let [a, b, c, d, e, f, g] = &mut zero;
-+            libmimalloc_sys::mi_process_info(a, b, c, d, e, &mut commit, f, g);
++            let [a, b, c, e, f, g] = &mut zero;
++            libmimalloc_sys::mi_process_info(a, b, c, &mut rss, e, &mut commit, f, g);
 +        }
++        let commit = commit.max(rss);
 +        // AQW build: what Windows counts against the graphics chip's memory (see
 +        // `mugetsu::video_memory`).
 +        let video_memory = crate::mugetsu::video_memory()
@@ -9048,7 +9055,7 @@ index a3410740e..f26876886 100644
  }
  
  impl MainWindow {
-@@ -52,13 +404,70 @@ impl MainWindow {
+@@ -52,13 +406,70 @@ impl MainWindow {
              // surface also keeps the size it had before, as `GuiController::resize`
              // refuses to reconfigure it to a zero size.
              if !self.minimized && !self.occluded {
@@ -9120,7 +9127,7 @@ index a3410740e..f26876886 100644
              }
  
              // Important that we return here, or we'll get a feedback loop with egui
-@@ -72,9 +481,13 @@ impl MainWindow {
+@@ -72,9 +483,13 @@ impl MainWindow {
          }
          match event {
              WindowEvent::CloseRequested => {
@@ -9134,7 +9141,7 @@ index a3410740e..f26876886 100644
                  // How minimizing shows up on Windows; winit still has no
                  // `WindowEvent::Minimize`. (`Window::is_minimized` does exist by
                  // now, but it has to be polled, and it wouldn't tell us anything
-@@ -115,10 +528,11 @@ impl MainWindow {
+@@ -115,10 +530,11 @@ impl MainWindow {
                  }
  
                  self.mouse_pos = position;
@@ -9150,7 +9157,7 @@ index a3410740e..f26876886 100644
              }
              WindowEvent::DroppedFile(file) => {
                  if let Some(content_descriptor) = ContentDescriptor::new_local(&file, None) {
-@@ -130,9 +544,17 @@ impl MainWindow {
+@@ -130,9 +546,17 @@ impl MainWindow {
                  }
              }
              WindowEvent::Focused(true) => {
@@ -9168,7 +9175,7 @@ index a3410740e..f26876886 100644
                  self.player.handle_event(PlayerEvent::FocusLost);
              }
              WindowEvent::MouseInput { button, state, .. } => {
-@@ -140,6 +562,9 @@ impl MainWindow {
+@@ -140,6 +564,9 @@ impl MainWindow {
                      return;
                  }
  
@@ -9178,7 +9185,7 @@ index a3410740e..f26876886 100644
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -166,6 +591,8 @@ impl MainWindow {
+@@ -166,6 +593,8 @@ impl MainWindow {
                      // Show context menu.
                      if let Some(mut player) = self.player.get() {
                          let context_menu = player.prepare_context_menu();
@@ -9187,7 +9194,7 @@ index a3410740e..f26876886 100644
  
                          // MouseUp event will be ignored when the context menu is shown,
                          // but it has to be dispatched when the menu closes.
-@@ -174,7 +601,7 @@ impl MainWindow {
+@@ -174,7 +603,7 @@ impl MainWindow {
                              y,
                              button: RuffleMouseButton::Right,
                          };
@@ -9196,7 +9203,7 @@ index a3410740e..f26876886 100644
                      }
                  }
                  self.check_redraw();
-@@ -203,6 +630,7 @@ impl MainWindow {
+@@ -203,6 +632,7 @@ impl MainWindow {
                  }
              }
              WindowEvent::CursorLeft { .. } => {
@@ -9204,7 +9211,7 @@ index a3410740e..f26876886 100644
                  if let Some(mut player) = self.player.get() {
                      player.set_mouse_in_stage(false);
                  }
-@@ -267,6 +695,56 @@ impl MainWindow {
+@@ -267,6 +697,56 @@ impl MainWindow {
          }
      }
  
@@ -9261,7 +9268,7 @@ index a3410740e..f26876886 100644
      fn on_metadata(&mut self, swf_header: HeaderExt) {
          let height_offset = if self.gui.window().fullscreen().is_some() || self.no_gui {
              0.0
-@@ -389,21 +867,171 @@ impl MainWindow {
+@@ -389,21 +869,171 @@ impl MainWindow {
          // We should look at changing our tick to happen somewhere else if we see any behavioural problems.
          if matches!(self.loaded, LoadingState::Loaded) {
              let new_time = Instant::now();
@@ -9434,7 +9441,7 @@ index a3410740e..f26876886 100644
              self.gui.window().request_redraw();
          }
      }
-@@ -429,6 +1057,9 @@ macro_rules! enter_runtime {
+@@ -429,6 +1059,9 @@ macro_rules! enter_runtime {
  impl App {
      pub fn new(preferences: GlobalPreferences) -> Result<(Self, EventLoop<RuffleEvent>), Error> {
          let event_loop = EventLoop::with_user_event().build()?;
@@ -9444,7 +9451,7 @@ index a3410740e..f26876886 100644
  
          let mut font_database = fontdb::Database::default();
          font_database.load_system_fonts();
-@@ -461,9 +1092,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -461,9 +1094,10 @@ impl ApplicationHandler<RuffleEvent> for App {
  
          if cause == StartCause::Init {
              let movie_url = self.preferences.cli.movie_url.clone();
@@ -9457,7 +9464,7 @@ index a3410740e..f26876886 100644
  
              let no_gui = self.preferences.cli.no_gui;
              let min_window_size = if no_gui {
-@@ -479,7 +1111,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -479,7 +1113,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
              let mut window_attributes = WindowAttributes::default()
                  .with_visible(false)
@@ -9466,7 +9473,7 @@ index a3410740e..f26876886 100644
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
-@@ -560,10 +1192,26 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -560,10 +1194,26 @@ impl ApplicationHandler<RuffleEvent> for App {
                  minimized: false,
                  occluded: false,
                  mouse_pos: PhysicalPosition::new(0.0, 0.0),
@@ -9493,7 +9500,7 @@ index a3410740e..f26876886 100644
              });
          }
      }
-@@ -586,6 +1234,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -586,6 +1236,10 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -9504,7 +9511,7 @@ index a3410740e..f26876886 100644
              (Some(main_window), RuffleEvent::BrowseAndOpen(options, open_type)) => {
                  let event_loop = main_window.event_loop_proxy.clone();
                  let picker = main_window.gui.file_picker();
-@@ -619,7 +1271,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -619,7 +1273,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              }
  
              (Some(main_window), RuffleEvent::CloseFile) => {
@@ -9513,7 +9520,7 @@ index a3410740e..f26876886 100644
                  main_window.gui.close_movie(&mut main_window.player);
              }
  
-@@ -702,18 +1354,28 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -702,18 +1356,28 @@ impl ApplicationHandler<RuffleEvent> for App {
              // only place where we're setting control flow, and events cancel wait.
              // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
              // timestamp in the past! Take that into consideration when changing this code.
@@ -9544,7 +9551,7 @@ index a3410740e..f26876886 100644
  
          // Manually stop the tokio runtime: this makes sure that any pending Player-bound futures
          // are properly cancelled and put back on the winit event loop before it closes, preventing
-@@ -721,6 +1383,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -721,6 +1385,7 @@ impl ApplicationHandler<RuffleEvent> for App {
          if let Some(runtime) = self.runtime.take() {
              runtime.shutdown_timeout(std::time::Duration::from_secs(1));
          }
@@ -9552,7 +9559,7 @@ index a3410740e..f26876886 100644
      }
  }
  
-@@ -729,3 +1392,17 @@ enum LoadingState {
+@@ -729,3 +1394,17 @@ enum LoadingState {
      WaitingForResize,
      Loaded,
  }
@@ -10945,10 +10952,10 @@ index 2265dc24c..91a3223d3 100644
      });
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
 new file mode 100644
-index 000000000..53eb549ed
+index 000000000..ee37bb25b
 --- /dev/null
 +++ b/desktop/src/mugetsu.rs
-@@ -0,0 +1,770 @@
+@@ -0,0 +1,791 @@
 +//! AQW build (Mugetsu): things the release player does on its own, without a launcher:
 +//! the window title, remembering that the Vulkan driver crashed on this PC (so the next start
 +//! uses DirectX 12), the "running on the built-in graphics" tip and the new-version notice.
@@ -11444,7 +11451,28 @@ index 000000000..53eb549ed
 +
 +#[cfg(not(windows))]
 +pub fn video_memory() -> Option<(u64, u64)> {
-+    None
++    #[cfg(target_os = "linux")]
++    let rss = std::fs::read_to_string("/proc/self/statm")
++        .ok()
++        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
++        .map(|pages| pages * 4096)
++        .unwrap_or(0);
++
++    #[cfg(not(target_os = "linux"))]
++    let rss = {
++        let mut rss = 0usize;
++        let mut zero = [0usize; 7];
++        // SAFETY: plain out-pointers to mimalloc process info.
++        unsafe {
++            let [a, b, c, d, e, f, g] = &mut zero;
++            libmimalloc_sys::mi_process_info(a, b, c, &mut rss, d, e, f, g);
++        }
++        rss as u64
++    };
++
++    // Baseline memory budget of 1024 MB for platforms without DXGI video memory queries.
++    let budget = 1024u64 << 20;
++    Some((budget, rss.min(budget * 2)))
 +}
 +
 +/// A smaller graphics memory budget to test the memory watch with on a big card: a file
