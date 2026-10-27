@@ -19,7 +19,7 @@ else
     echo "Note: 'gh' CLI not found. Building and packaging locally..."
     bash source/build.sh
     
-    VERSION=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs 2>/dev/null || echo "1.5.2")
+    VERSION=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs 2>/dev/null || echo "1.5.1")
     TAG="${TAG:-v$VERSION}"
     
     mkdir -p package/Mugetsu/LICENSES release

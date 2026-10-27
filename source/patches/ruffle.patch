@@ -6946,8 +6946,8 @@ index 37faf2570..a011c9472 100644
 +CompanyName = "Mugetsu"
 +LegalCopyright = "Mugetsu; based on Ruffle, Copyright © 2018 Ruffle LLC and Ruffle contributors"
 +# Keep equal to `mugetsu::VERSION` (desktop/src/mugetsu.rs).
-+ProductVersion = "1.5.2"
-+FileVersion = "1.5.2 (Ruffle 0.7.0-nightly.2026.10.2)"
++ProductVersion = "1.5.1"
++FileVersion = "1.5.1 (Ruffle 0.7.0-nightly.2026.10.2)"
  # InternalName should be the same as the module name
  InternalName = "ruffle_desktop"
 -OriginalFilename = "ruffle.exe"
@@ -10968,7 +10968,7 @@ index 000000000..ee37bb25b
 +
 +/// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
 +/// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
-+pub const VERSION: &str = "1.5.2";
++pub const VERSION: &str = "1.5.1";
 +
 +const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
 +const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";

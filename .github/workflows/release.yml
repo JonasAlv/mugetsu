@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release version tag (e.g. v1.5.2). Leave blank to auto-derive from mugetsu.rs'
+        description: 'Release version tag (e.g. v1.5.1). Leave blank to auto-derive from mugetsu.rs'
         required: false
         default: ''
       title:
@@ -67,7 +67,7 @@ jobs:
             TAG="${{ github.event.inputs.tag }}"
             VERSION="${TAG#v}"
           else
-            VERSION=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs || echo "1.5.2")
+            VERSION=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs 2>/dev/null || echo "1.5.1")
             TAG="v$VERSION"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
