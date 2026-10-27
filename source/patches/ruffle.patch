@@ -10714,7 +10714,7 @@ index 00000000..d9b2c51f
 +    std::process::exit(0);
 +}
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 2265dc24..809b157c 100644
+index 2265dc24..3d7b3375 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
 @@ -13,11 +13,15 @@ mod custom_event;
@@ -10963,11 +10963,7 @@ index 2265dc24..809b157c 100644
 +    }
 +    let gui = args.iter().any(|a| is(a, "--gui"));
 +    args.retain(|a| !is(a, "--gui"));
-+    let has_movie = Opt::try_parse_from(&args).map_or(true, |opt| opt.movie_url.is_some());
-+    if has_movie {
-+        // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
-+        return args;
-+    }
++    let has_movie = Opt::try_parse_from(&args).ok().and_then(|opt| opt.movie_url).is_some();
 +    mugetsu::set_plays_aqw();
 +    ruffle_core::frame_interpolation::set_enabled(mugetsu::saved_interpolation());
 +    // Flash-style edge smoothing by default (much faster on laptops; MSAA in the menu).
@@ -11007,6 +11003,7 @@ index 2265dc24..809b157c 100644
 +    // (option, short form, value)
 +    let defaults: &[(&str, Option<&str>, Option<&str>)] = &[
 +        ("--tcp-connections", None, Some("allow")),
++        ("--open-url-mode", None, Some("allow")),
 +        ("--player-version", None, Some("9")),
 +        ("--width", None, Some("960")),
 +        ("--height", None, Some("580")),
@@ -11016,7 +11013,10 @@ index 2265dc24..809b157c 100644
 +        ("--no-gui", None, None),
 +        ("--graphics", Some("-g"), Some(graphics)),
 +    ];
-+    let mut full = vec![args[0].clone(), AQW_LOADER_URL.into()];
++    let mut full = vec![args[0].clone()];
++    if !has_movie {
++        full.push(AQW_LOADER_URL.into());
++    }
 +    for (flag, short, value) in defaults {
 +        if (*flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
 +            continue;
