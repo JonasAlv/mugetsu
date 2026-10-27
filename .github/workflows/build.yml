@@ -1,31 +1,28 @@
-name: Build Mugetsu (Linux CI)
+name: Build & Release Mugetsu (Linux)
 
 on:
   push:
     branches:
       - skua-linux
+      - skua-mugetsu
       - main
     paths:
       - 'source/**'
-      - '.github/workflows/build.yml'
-  pull_request:
-    branches:
-      - skua-linux
-      - main
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: build-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-linux:
-    name: Build Mugetsu (Ubuntu 22.04 / Linux)
+  build-and-release:
+    name: Build & Release Mugetsu (Ubuntu 22.04 / Linux)
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -58,9 +55,58 @@ jobs:
           file source/build/out/Mugetsu
           sha256sum source/build/out/Mugetsu
 
-      - name: Upload Mugetsu artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mugetsu-linux-x86_64
           path: source/build/out/Mugetsu
           if-no-files-found: error
+
+      - name: Package Release Assets
+        id: package
+        run: |
+          VERSION=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs 2>/dev/null || echo "1.5.1")
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          mkdir -p package/Mugetsu/LICENSES release
+          cp source/build/out/Mugetsu package/Mugetsu/
+          cp -r source/release-linux/* package/Mugetsu/ 2>/dev/null || true
+          cp -r source/release/LICENSES/* package/Mugetsu/LICENSES/ 2>/dev/null || true
+          cp LICENSE package/Mugetsu/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt 2>/dev/null || true
+
+          ARCHIVE="Mugetsu-$VERSION-linux.tar.gz"
+          tar -C package --owner=0 --group=0 --numeric-owner -czf "release/$ARCHIVE" Mugetsu
+
+          cd release
+          sha256sum "$ARCHIVE" > SHA256SUMS.txt
+          sha256sum ../source/build/out/Mugetsu >> SHA256SUMS.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.package.outputs.tag }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          echo "Checking if release $TAG already exists..."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists. Uploading updated assets..."
+            gh release upload "$TAG" \
+              source/build/out/Mugetsu \
+              "release/Mugetsu-$VERSION-linux.tar.gz" \
+              release/SHA256SUMS.txt \
+              --clobber
+            gh release edit "$TAG" --latest --notes ""
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" \
+              source/build/out/Mugetsu \
+              "release/Mugetsu-$VERSION-linux.tar.gz" \
+              release/SHA256SUMS.txt \
+              --title "Mugetsu $TAG" \
+              --notes "" \
+              --latest
+          fi
+          echo "Release $TAG published and marked latest successfully!"
