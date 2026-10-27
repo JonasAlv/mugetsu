@@ -1,171 +1,66 @@
-# Builds Mugetsu from source/ on GitHub's Windows and Linux machines.
-#
-# - Every change to source/ on main: test builds, downloadable from the run's page.
-# - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
-#   draft release with the Windows zip, the Linux archive and their SHA-256 (notes from
-#   source/notes/<version>.md), to check and publish by hand.
-name: Build Mugetsu
+name: Build Mugetsu (Linux CI)
 
 on:
   push:
-    branches: [main]
-    paths: ['source/**', '.github/workflows/build.yml']
+    branches:
+      - skua-linux
+      - main
+    paths:
+      - 'source/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches:
+      - skua-linux
+      - main
   workflow_dispatch:
-    inputs:
-      release:
-        description: 'Create a draft release'
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 240
-    outputs:
-      version: ${{ steps.package.outputs.version }}
-      sha: ${{ steps.package.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust
-        shell: pwsh
-        run: |
-          $version = (Get-Content source/RUST_VERSION -Raw).Trim()
-          rustup toolchain install $version --profile minimal --no-self-update
-          rustup default $version
-          rustc --version
-
-      - name: Install Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Build
-        shell: pwsh
-        run: ./source/build.ps1
-
-      - name: Package
-        id: package
-        shell: pwsh
-        run: |
-          $source = Get-Content source/build/ruffle/desktop/src/mugetsu.rs -Raw
-          $version = [regex]::Match($source, 'pub const VERSION: &str = "([^"]+)"').Groups[1].Value
-          $dir = 'package/Mugetsu'
-          New-Item -ItemType Directory -Force "$dir/LICENSES" | Out-Null
-          Copy-Item source/build/out/Mugetsu.exe $dir
-          Copy-Item source/release/* $dir -Recurse -Force
-          Copy-Item LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
-          New-Item -ItemType Directory -Force release | Out-Null
-          $zip = "Mugetsu-$version-windows.zip"
-          Compress-Archive -Path $dir -DestinationPath "release/$zip"
-          $zipHash = (Get-FileHash "release/$zip" -Algorithm SHA256).Hash
-          $exeHash = (Get-FileHash "$dir/Mugetsu.exe" -Algorithm SHA256).Hash
-          "Mugetsu $version"
-          "zip SHA-256: $zipHash"
-          "exe SHA-256: $exeHash"
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "sha=$zipHash" >> $env:GITHUB_OUTPUT
-          "## Mugetsu $version (Windows)`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Mugetsu-${{ steps.package.outputs.version }}
-          path: package
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: release
-
-  linux:
-    # The oldest supported Ubuntu runner: the program then runs on systems from about 2022 on
-    # (it needs the C library of the system it was built on, or newer).
+  build-linux:
+    name: Build Mugetsu (Ubuntu 22.04 / Linux)
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
-    outputs:
-      version: ${{ steps.package.outputs.version }}
-      sha: ${{ steps.package.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v5
+    timeout-minutes: 120
 
-      - name: Install libraries
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev libfontconfig-dev libfreetype6-dev libssl-dev
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         run: |
           version=$(tr -d '[:space:]' < source/RUST_VERSION)
           rustup toolchain install "$version" --profile minimal --no-self-update
           rustup default "$version"
           rustc --version
 
-      - name: Install Java
-        uses: actions/setup-java@v5
+      - name: Install Java 21
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Build
+      - name: Build Mugetsu
         run: bash source/build.sh
 
-      - name: Package
-        id: package
+      - name: Verify build output
         run: |
-          version=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs)
-          dir=package/Mugetsu
-          mkdir -p "$dir/LICENSES" release
-          cp source/build/out/Mugetsu "$dir/"
-          cp source/release-linux/* "$dir/"
-          cp source/release/LICENSES/* "$dir/LICENSES/"
-          cp LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
-          archive="Mugetsu-$version-linux.tar.gz"
-          # A tar archive keeps the program's "executable" mark (a zip wouldn't).
-          tar -C package --owner=0 --group=0 --numeric-owner -czf "release/$archive" Mugetsu
-          hash=$(sha256sum "release/$archive" | cut -d' ' -f1 | tr a-f A-F)
-          binHash=$(sha256sum "$dir/Mugetsu" | cut -d' ' -f1 | tr a-f A-F)
-          echo "Mugetsu $version"
-          echo "archive SHA-256: $hash"
-          echo "Mugetsu SHA-256: $binHash"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$hash" >> "$GITHUB_OUTPUT"
-          printf '## Mugetsu %s (Linux)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
+          ls -la source/build/out/Mugetsu
+          file source/build/out/Mugetsu
+          sha256sum source/build/out/Mugetsu
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Mugetsu artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: release-linux
-          path: release
-
-  release:
-    if: ${{ inputs.release }}
-    needs: [windows, linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          path: release
-          merge-multiple: true
-
-      - name: Draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.windows.outputs.version }}
-          LINUX_VERSION: ${{ needs.linux.outputs.version }}
-          SHA: ${{ needs.windows.outputs.sha }}
-          LINUX_SHA: ${{ needs.linux.outputs.sha }}
-        run: |
-          if [ "$VERSION" != "$LINUX_VERSION" ]; then
-            echo "Windows ($VERSION) and Linux ($LINUX_VERSION) versions differ"; exit 1
-          fi
-          notes="source/notes/$VERSION.md"
-          if [ ! -f "$notes" ]; then echo "Missing release notes: $notes"; exit 1; fi
-          # LINUX_SHA_PLACEHOLDER first: it contains SHA_PLACEHOLDER.
-          sed -e "s/LINUX_SHA_PLACEHOLDER/$LINUX_SHA/g" -e "s/SHA_PLACEHOLDER/$SHA/g" "$notes" > notes.md
-          gh release create "v$VERSION" release/* --draft --title "Mugetsu $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
+          name: Mugetsu-linux-x86_64
+          path: source/build/out/Mugetsu
+          if-no-files-found: error
