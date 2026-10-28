@@ -91,7 +91,7 @@ graphics running slowly on Medium or High, it shows this tip once; it never chan
 - **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
   1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
   the zip it made.
-- **VirusTotal (version 1.6.0):** [zip 0/64](https://www.virustotal.com/gui/file/ecace89c54e2503f591b08c4343449b689dbf04b23445a4feb2e299e18ed54c7) · [Mugetsu.exe 0/70](https://www.virustotal.com/gui/file/3b2b64a35f58bca9812eda7f089b6d1f568bd0ed28cb3144463c42aa52c16245) · [Linux archive 0/61](https://www.virustotal.com/gui/file/f80748927534fcea6fe483fe455c8e05bb215eee11a445ecb5ac88456a995ef5)
+- **VirusTotal (version 1.6.0):** [zip 0/64](https://www.virustotal.com/gui/file/ecace89c54e2503f591b08c4343449b689dbf04b23445a4feb2e299e18ed54c7) · [Mugetsu.exe 0/70](https://www.virustotal.com/gui/file/3b2b64a35f58bca9812eda7f089b6d1f568bd0ed28cb3144463c42aa52c16245) · [Linux archive 0/61](https://www.virustotal.com/gui/file/f80748927534fcea6fe483fe455c8e05bb215eee11a445ecb5ac88456a995ef5) · [macOS zip 0/65](https://www.virustotal.com/gui/file/93f39729622f70bbb1c77fee7248593c989c6488b1d4b14b644382f545664b79)
 - **SHA-256** of each release file is listed on its release page, so you can check your download.
 
 ## FAQ
