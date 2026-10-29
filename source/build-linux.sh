@@ -11,6 +11,10 @@
 # Optional, for building without downloads: MUGETSU_RUFFLE_REMOTE (a local clone of Ruffle
 # to fetch the commit from) and MUGETSU_CRATES_DIR (a folder with the unpacked crates, e.g.
 # Cargo's registry/src/index.crates.io-*).
+#
+# For CPUs without AVX2 (they stop at once with "illegal instruction"):
+#   MUGETSU_TARGET_CPU=x86-64-v2 MUGETSU_TARGET_FEATURES=+avx,+fma,+f16c ./build-linux.sh
+# Unlike MUGETSU_RUSTFLAGS, these keep the speed profile and the shortened paths.
 set -Eeuo pipefail
 
 no_pgo=0
@@ -24,10 +28,12 @@ Build Mugetsu's Linux binary from the pinned Ruffle commit.
 The resulting binary is: source/build/out/Mugetsu
 
 Environment:
-  MUGETSU_RUFFLE_REMOTE  Ruffle git remote or local clone
-  MUGETSU_CRATES_DIR     directory containing wgpu-core-30.0.1,
-                         wgpu-hal-30.0.1, gc-arena-0.7.0,
-                         lyon_path-1.0.7 and lyon_algorithms-1.0.5
+  MUGETSU_RUFFLE_REMOTE    Ruffle git remote or local clone
+  MUGETSU_CRATES_DIR       directory containing wgpu-core-30.0.1,
+                           wgpu-hal-30.0.1, gc-arena-0.7.0,
+                           lyon_path-1.0.7 and lyon_algorithms-1.0.5
+  MUGETSU_TARGET_CPU       CPU level to build for (default: x86-64-v3, needs AVX2)
+  MUGETSU_TARGET_FEATURES  extra CPU features, e.g. +avx,+fma,+f16c
 USAGE
 }
 while (($#)); do
@@ -99,10 +105,14 @@ if ((prepare_only)); then
     exit 0
 fi
 
-# 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
+# 4. Build. x86-64-v3 (AVX2) like the released builds unless MUGETSU_TARGET_CPU says otherwise;
+# paths in the program are shortened.
 # When several prefixes match, the last one given wins: most specific last.
-flags=("-Ctarget-cpu=x86-64-v3"
+flags=("-Ctarget-cpu=${MUGETSU_TARGET_CPU:-x86-64-v3}"
     "--remap-path-prefix=$HOME=home" "--remap-path-prefix=$ruffle=ruffle")
+if [[ -n "${MUGETSU_TARGET_FEATURES:-}" ]]; then
+    flags+=("-Ctarget-feature=$MUGETSU_TARGET_FEATURES")
+fi
 if [[ -n "${CARGO_HOME:-}" ]]; then
     flags+=("--remap-path-prefix=$CARGO_HOME=cargo")
 fi

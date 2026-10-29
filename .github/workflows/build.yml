@@ -3,7 +3,8 @@
 # - Every change to source/ on main, and every pull request that changes it: test builds,
 #   downloadable from the run's page.
 # - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
-#   draft release with the Windows zip, the Linux archive, the macOS zip and their SHA-256
+#   draft release with the Windows zips and Linux archives (normal, and x86-64-v2 for CPUs
+#   without AVX2), the macOS zip and their SHA-256
 #   (notes from source/notes/<version>.md), to check and publish by hand.
 #   "Skip macOS" (for when GitHub has no Mac free): the draft has Windows and Linux only, and
 #   the notes' macOS lines are left out. "Add macOS to the existing release" later builds only
@@ -37,9 +38,22 @@ permissions:
 
 jobs:
   windows:
+    # Two builds, like Linux: the normal one (x86-64-v3, needs AVX2) and one for CPUs without
+    # AVX2, released as Mugetsu-<ver>-windows-x86-64-v2.zip. Only the normal build sets the outputs.
     if: ${{ !inputs.attach_macos }}
+    name: windows${{ matrix.suffix }}
     runs-on: windows-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: ''
+            cpu: x86-64-v3
+            features: ''
+          - suffix: -x86-64-v2
+            cpu: x86-64-v2
+            features: +avx,+fma,+f16c
     outputs:
       version: ${{ steps.package.outputs.version }}
       sha: ${{ steps.package.outputs.sha }}
@@ -62,11 +76,16 @@ jobs:
 
       - name: Build
         shell: pwsh
+        env:
+          MUGETSU_TARGET_CPU: ${{ matrix.cpu }}
+          MUGETSU_TARGET_FEATURES: ${{ matrix.features }}
         run: ./source/build-windows.ps1
 
       - name: Package
         id: package
         shell: pwsh
+        env:
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           $source = Get-Content source/build/ruffle/desktop/src/mugetsu.rs -Raw
           $version = [regex]::Match($source, 'pub const VERSION: &str = "([^"]+)"').Groups[1].Value
@@ -76,33 +95,51 @@ jobs:
           Copy-Item source/release/* $dir -Recurse -Force
           Copy-Item LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
           New-Item -ItemType Directory -Force release | Out-Null
-          $zip = "Mugetsu-$version-windows.zip"
+          $zip = "Mugetsu-$version-windows$env:SUFFIX.zip"
           Compress-Archive -Path $dir -DestinationPath "release/$zip"
           $zipHash = (Get-FileHash "release/$zip" -Algorithm SHA256).Hash
           $exeHash = (Get-FileHash "$dir/Mugetsu.exe" -Algorithm SHA256).Hash
-          "Mugetsu $version"
+          "Mugetsu $version ($zip)"
           "zip SHA-256: $zipHash"
           "exe SHA-256: $exeHash"
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "sha=$zipHash" >> $env:GITHUB_OUTPUT
-          "## Mugetsu $version (Windows)`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
+          if (-not $env:SUFFIX) {
+            "version=$version" >> $env:GITHUB_OUTPUT
+            "sha=$zipHash" >> $env:GITHUB_OUTPUT
+          }
+          # For the test-build artifact's name (the job outputs above are the normal build's only).
+          "artifact=Mugetsu-$version$env:SUFFIX" >> $env:GITHUB_OUTPUT
+          "## Mugetsu $version (Windows$env:SUFFIX)`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v6
         with:
-          name: Mugetsu-${{ steps.package.outputs.version }}
+          name: ${{ steps.package.outputs.artifact }}
           path: package
 
       - uses: actions/upload-artifact@v6
         with:
-          name: release-windows
+          name: release-windows${{ matrix.suffix }}
           path: release
 
   linux:
     # The oldest supported Ubuntu runner: the program then runs on systems from about 2022 on
     # (it needs the C library of the system it was built on, or newer).
+    # Two builds: the normal one (x86-64-v3, needs AVX2) and one for CPUs without AVX2
+    # (x86-64-v2 with AVX, FMA and F16C), released as Mugetsu-<ver>-linux-x86-64-v2.tar.gz.
+    # Only the normal build sets the job's outputs, so the release notes use its SHA-256.
     if: ${{ !inputs.attach_macos }}
+    name: linux${{ matrix.suffix }}
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: ''
+            cpu: x86-64-v3
+            features: ''
+          - suffix: -x86-64-v2
+            cpu: x86-64-v2
+            features: +avx,+fma,+f16c
     outputs:
       version: ${{ steps.package.outputs.version }}
       sha: ${{ steps.package.outputs.sha }}
@@ -128,10 +165,15 @@ jobs:
           java-version: '21'
 
       - name: Build
+        env:
+          MUGETSU_TARGET_CPU: ${{ matrix.cpu }}
+          MUGETSU_TARGET_FEATURES: ${{ matrix.features }}
         run: bash source/build-linux.sh
 
       - name: Package
         id: package
+        env:
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           version=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs)
           dir=package/Mugetsu
@@ -140,21 +182,23 @@ jobs:
           cp source/release-linux/* "$dir/"
           cp source/release/LICENSES/* "$dir/LICENSES/"
           cp LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
-          archive="Mugetsu-$version-linux.tar.gz"
+          archive="Mugetsu-$version-linux$SUFFIX.tar.gz"
           # A tar archive keeps the program's "executable" mark (a zip wouldn't).
           tar -C package --owner=0 --group=0 --numeric-owner -czf "release/$archive" Mugetsu
           hash=$(sha256sum "release/$archive" | cut -d' ' -f1 | tr a-f A-F)
           binHash=$(sha256sum "$dir/Mugetsu" | cut -d' ' -f1 | tr a-f A-F)
-          echo "Mugetsu $version"
+          echo "Mugetsu $version ($archive)"
           echo "archive SHA-256: $hash"
           echo "Mugetsu SHA-256: $binHash"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$hash" >> "$GITHUB_OUTPUT"
-          printf '## Mugetsu %s (Linux)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$SUFFIX" ]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "sha=$hash" >> "$GITHUB_OUTPUT"
+          fi
+          printf '## Mugetsu %s (Linux%s)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$SUFFIX" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: release-linux
+          name: release-linux${{ matrix.suffix }}
           path: release
 
   macos:

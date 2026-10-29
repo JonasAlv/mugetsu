@@ -10,6 +10,10 @@
 # Optional, for building without downloads: MUGETSU_RUFFLE_REMOTE (a local clone of Ruffle
 # to fetch the commit from) and MUGETSU_CRATES_DIR (a folder with the unpacked crates, e.g.
 # Cargo's registry/src/index.crates.io-*).
+#
+# For CPUs without AVX2 (they stop at once with an illegal-instruction crash):
+#   $env:MUGETSU_TARGET_CPU = 'x86-64-v2'; $env:MUGETSU_TARGET_FEATURES = '+avx,+fma,+f16c'
+# These keep the speed profile and the shortened paths.
 param([switch]$NoPgo, [switch]$PrepareOnly)
 
 $ErrorActionPreference = 'Stop'
@@ -75,8 +79,12 @@ if ($PrepareOnly) {
     return
 }
 
-# 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
-$flags = @('-Ctarget-feature=+crt-static', '-Ctarget-cpu=x86-64-v3',
+# 4. Build. x86-64-v3 (AVX2) like the released builds unless MUGETSU_TARGET_CPU says otherwise;
+# paths in the program are shortened.
+$targetCpu = if ($env:MUGETSU_TARGET_CPU) { $env:MUGETSU_TARGET_CPU } else { 'x86-64-v3' }
+$features = '+crt-static'
+if ($env:MUGETSU_TARGET_FEATURES) { $features += ",$env:MUGETSU_TARGET_FEATURES" }
+$flags = @("-Ctarget-feature=$features", "-Ctarget-cpu=$targetCpu",
     "--remap-path-prefix=$ruffle=ruffle", "--remap-path-prefix=$env:USERPROFILE=home")
 if ($env:CARGO_HOME) { $flags += "--remap-path-prefix=$env:CARGO_HOME=cargo" }
 if (-not $NoPgo) {
