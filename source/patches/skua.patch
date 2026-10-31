@@ -1,0 +1,765 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 3d9b65e..e843f32 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5017,6 +5017,7 @@ dependencies = [
+  "windows-sys 0.61.2",
+  "winit",
+  "winresource",
++ "x11-dl",
+ ]
+ 
+ [[package]]
+diff --git a/core/src/avm2/globals/json.rs b/core/src/avm2/globals/json.rs
+index 43e1962..4f3b31c 100644
+--- a/core/src/avm2/globals/json.rs
++++ b/core/src/avm2/globals/json.rs
+@@ -181,7 +181,20 @@ impl<'gc> AvmSerializer<'gc> {
+                 }
+             }
+         } else {
++            // Skua build: like Flash, an Event's built-in getters (type, target, ...) aren't
++            // written out; `target` would recurse into the whole dispatcher (AQW's SmartFox
++            // client). Flash gives `{"params":{...}}` for AQW's server packets.
++            let event_class = activation.avm2().classes().event.inner_class_definition();
++            let is_event = obj.is_of_type(event_class);
+             for (name, val) in obj.public_vtable_properties(activation)? {
++                if is_event
++                    && matches!(
++                        name.to_utf8_lossy().as_ref(),
++                        "type" | "bubbles" | "cancelable" | "eventPhase" | "target" | "currentTarget"
++                    )
++                {
++                    continue;
++                }
+                 let mapped = self.map_value(activation, || name, val)?;
+                 if !skip_value(mapped) {
+                     js_obj.insert(
+@@ -237,6 +250,9 @@ impl<'gc> AvmSerializer<'gc> {
+             Value::Null => JsonValue::Null,
+             Value::Undefined => JsonValue::Null,
+             Value::Integer(i) => JsonValue::from(i),
++            // Skua build: whole numbers past the ±2^28 integer range stay Numbers, and serde_json
++            // printed them as "967902521.0" where Flash prints "967902521" (e.g. AQW's CharItemID).
++            Value::Number(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => JsonValue::from(n as i64),
+             Value::Number(n) => JsonValue::from(n),
+             Value::Bool(b) => JsonValue::from(b),
+             Value::String(s) => JsonValue::from(s.to_utf8_lossy().deref()),
+diff --git a/desktop/Cargo.toml b/desktop/Cargo.toml
+index b36589f..3dbc2ed 100644
+--- a/desktop/Cargo.toml
++++ b/desktop/Cargo.toml
+@@ -70,6 +70,8 @@ fontconfig = { version = "0.11.0", optional = true }
+ 
+ [target.'cfg(target_os = "linux")'.dependencies]
+ ashpd = { version = "0.13.0", features = ["settings", "game_mode"] }
++# Skua build: keyboard focus for the window embedded in Bonxie (see `skua::take_focus`).
++x11-dl = "2.21"
+ 
+ [target.'cfg(windows)'.dependencies]
+ # AQW build: DXGI, to see which graphics chip Mugetsu will use (see `mugetsu::intel_graphics`).
+diff --git a/desktop/src/app.rs b/desktop/src/app.rs
+index a5f7bc2..c3cd08a 100644
+--- a/desktop/src/app.rs
++++ b/desktop/src/app.rs
+@@ -498,7 +498,24 @@ impl MainWindow {
+             return;
+         }
+ 
+-        if self.gui.handle_event(&event) {
++        let embedded_mouse_event = self.preferences.cli.skua_parent.is_some()
++            && matches!(
++                &event,
++                WindowEvent::CursorMoved { .. }
++                    | WindowEvent::CursorEntered { .. }
++                    | WindowEvent::CursorLeft { .. }
++                    | WindowEvent::MouseInput { .. }
++                    | WindowEvent::MouseWheel { .. }
++            );
++        let embedded_dialog = self.preferences.cli.skua_parent.is_some()
++            && self.gui.is_open_url_dialog_visible();
++        if embedded_mouse_event && embedded_dialog {
++            let _ = self.gui.handle_event(&event);
++            return;
++        }
++        if (!embedded_mouse_event || self.gui.is_context_menu_visible())
++            && self.gui.handle_event(&event)
++        {
+             // Event consumed by GUI.
+             return;
+         }
+@@ -588,6 +605,11 @@ impl MainWindow {
+                 // Keep MouseMove -> MouseDown ordering and an up-to-date hover target.
+                 self.flush_mouse_move();
+ 
++                // Skua build: a clicked child window doesn't get the keyboard by itself.
++                if state == ElementState::Released && self.preferences.cli.skua_parent.is_some() {
++                    crate::skua::take_focus(self.gui.window());
++                }
++
+                 use ruffle_core::events::MouseButton as RuffleMouseButton;
+                 use winit::event::MouseButton;
+                 let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
+@@ -777,7 +799,8 @@ impl MainWindow {
+ 
+         // To prevent issues like waiting on resize indefinitely (#11364) or desyncing the window state on Windows,
+         // do not resize while window is maximized.
+-        let should_resize = !self.gui.window().is_maximized();
++        let should_resize =
++            !self.gui.window().is_maximized() && self.preferences.cli.skua_parent.is_none();
+ 
+         let (viewport_size, state) = if should_resize {
+             let movie_width = swf_header.stage_size().width().to_pixels();
+@@ -864,7 +887,28 @@ impl MainWindow {
+         }
+     }
+ 
++    /// Skua build: runs the calls Bonxie sent (see `skua.rs`).
++    fn run_skua_calls(&mut self) {
++        let calls = crate::skua::take_calls();
++        if calls.is_empty() {
++            return;
++        }
++        let mut player = self.player.get();
++        for call in calls {
++            let result = match player.as_mut() {
++                Some(player) => player.call_internal_interface(&call.name, call.args),
++                None => ruffle_core::external::Value::Null,
++            };
++            crate::skua::reply(call.id, result);
++        }
++    }
++
+     fn about_to_wait(&mut self, gilrs: Option<&mut Gilrs>) {
++        if crate::skua::active() {
++            crate::skua::rearm();
++            self.run_skua_calls();
++        }
++
+         if let Some(Event { event, .. }) = gilrs.and_then(|gilrs| gilrs.next_event()) {
+             match event {
+                 EventType::ButtonPressed(button, _) => {
+@@ -1118,6 +1162,22 @@ impl App {
+     }
+ }
+ 
++/// Skua build: a borderless child of the given native window (`--skua-parent`).
++fn skua_child_of(attributes: WindowAttributes, parent: u64) -> WindowAttributes {
++    use winit::raw_window_handle::RawWindowHandle;
++    #[cfg(windows)]
++    let handle = std::num::NonZeroIsize::new(parent as isize)
++        .map(|hwnd| RawWindowHandle::Win32(winit::raw_window_handle::Win32WindowHandle::new(hwnd)));
++    #[cfg(all(unix, not(target_os = "macos")))]
++    let handle = Some(RawWindowHandle::Xlib(winit::raw_window_handle::XlibWindowHandle::new(
++        parent as _,
++    )));
++    #[cfg(target_os = "macos")]
++    let handle: Option<RawWindowHandle> = None; // ponytail: no embedding on macOS yet, own window
++    // SAFETY: Bonxie keeps the parent window alive for as long as this player runs.
++    unsafe { attributes.with_parent_window(handle) }.with_decorations(false)
++}
++
+ impl ApplicationHandler<RuffleEvent> for App {
+     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+         enter_runtime!(self);
+@@ -1147,6 +1207,11 @@ impl ApplicationHandler<RuffleEvent> for App {
+                 .with_window_icon(Some(icon))
+                 .with_min_inner_size(min_window_size);
+ 
++            // Skua build: draw inside Bonxie's game area, which also sizes the window.
++            if let Some(parent) = self.preferences.cli.skua_parent {
++                window_attributes = skua_child_of(window_attributes, parent);
++            }
++
+             #[cfg(target_os = "linux")]
+             {
+                 use winit::platform::startup_notify::{
+@@ -1163,9 +1229,20 @@ impl ApplicationHandler<RuffleEvent> for App {
+ 
+             let event_loop_proxy = self.event_loop_proxy.clone();
+             let preferences = self.preferences.clone();
+-            let window = event_loop
+-                .create_window(window_attributes)
+-                .expect("Window should be created");
++            // An embedded X11 parent can disappear during tab close/minimize. Exit the
++            // embedded player cleanly instead of panicking in winit with X11(Drawable).
++            let window = match event_loop.create_window(window_attributes) {
++                Ok(window) => window,
++                Err(error) if self.preferences.cli.skua_parent.is_some() => {
++                    tracing::warn!("Skua embedded window creation failed; parent likely closed: {error}");
++                    std::process::exit(0);
++                }
++                Err(error) => {
++                    tracing::error!("Mugetsu window creation failed: {error}");
++                    event_loop.exit();
++                    return;
++                }
++            };
+             let max_window_size = get_screen_size(&window);
+             window.set_max_inner_size(Some(max_window_size));
+             let window = Arc::new(window);
+@@ -1266,6 +1345,8 @@ impl ApplicationHandler<RuffleEvent> for App {
+                 }
+             }
+ 
++            (Some(main_window), RuffleEvent::SkuaWake) => main_window.run_skua_calls(),
++
+             (Some(main_window), RuffleEvent::MugetsuSetting(setting)) => {
+                 main_window.apply_setting(setting);
+             }
+diff --git a/desktop/src/cli.rs b/desktop/src/cli.rs
+index aa9f96e..8c4f1c3 100644
+--- a/desktop/src/cli.rs
++++ b/desktop/src/cli.rs
+@@ -217,6 +217,14 @@ pub struct Opt {
+     #[clap(long)]
+     pub no_gui: bool,
+ 
++    /// Skua build: address (host:port) of Bonxie's bridge, see `skua.rs`.
++    #[clap(long)]
++    pub skua_bridge: Option<String>,
++
++    /// Skua build: native handle of the window to draw in, as a child window.
++    #[clap(long)]
++    pub skua_parent: Option<u64>,
++
+     /// Remaps a specific button on a gamepad to a keyboard key.
+     /// This can be used to add new gamepad support to existing games, for example mapping
+     /// the D-pad to the arrow keys with -B d-pad-up=up -B d-pad-down=down etc.
+diff --git a/desktop/src/custom_event.rs b/desktop/src/custom_event.rs
+index 13be623..22f8757 100644
+--- a/desktop/src/custom_event.rs
++++ b/desktop/src/custom_event.rs
+@@ -43,6 +43,9 @@ pub enum RuffleEvent {
+     /// AQW build: the user changed one of Mugetsu's settings (right-click menu).
+     MugetsuSetting(crate::mugetsu::Setting),
+ 
++    /// Skua build: Bonxie sent calls to run (see `skua::take_calls`).
++    SkuaWake,
++
+     /// The movie wants to open a dialog.
+     OpenDialog(DialogDescriptor),
+ 
+diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
+index fb35b08..e44909f 100644
+--- a/desktop/src/gui/controller.rs
++++ b/desktop/src/gui/controller.rs
+@@ -106,7 +106,6 @@ impl GuiController {
+             &adapter_info,
+             preferences.graphics_power_preference().into(),
+         );
+-        crate::mugetsu::spawn_update_check(window.clone());
+         #[cfg(windows)]
+         if crate::mugetsu::plays_aqw() {
+             crate::windows::add_graphics_menu(&window);
+@@ -361,6 +360,10 @@ impl GuiController {
+                 surface_texture
+             }
+             state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
++                if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
++                    tracing::info!("Skua surface lost (host window closed), exiting");
++                    std::process::exit(0);
++                }
+                 // Reconfigure the surface if lost or outdated.
+                 // Some sources suggest ignoring `Outdated` and waiting for the next frame,
+                 // but I suspect this advice is related explicitly to resizing,
+@@ -556,6 +559,10 @@ impl GuiController {
+         self.gui.is_context_menu_visible()
+     }
+ 
++    pub fn is_open_url_dialog_visible(&self) -> bool {
++        self.gui.dialogs.is_open_url_dialog_visible()
++    }
++
+     /// AQW build: whether GUI-only repaints are useful: egui shows something, or is about to.
+     pub fn wants_redraws(&self) -> bool {
+         self.ui_visible || self.gui.is_context_menu_visible()
+diff --git a/desktop/src/gui/dialogs.rs b/desktop/src/gui/dialogs.rs
+index c6cbf23..849cd8c 100644
+--- a/desktop/src/gui/dialogs.rs
++++ b/desktop/src/gui/dialogs.rs
+@@ -182,6 +182,10 @@ impl Dialogs {
+         self.open_dialog.options()
+     }
+ 
++    pub fn is_open_url_dialog_visible(&self) -> bool {
++        self.open_url_dialog.is_some()
++    }
++
+     pub fn open_dialog(&mut self, event: DialogDescriptor) {
+         match event {
+             DialogDescriptor::OpenUrl(url) => {
+diff --git a/desktop/src/main.rs b/desktop/src/main.rs
+index 0c50b93..ac5f687 100644
+--- a/desktop/src/main.rs
++++ b/desktop/src/main.rs
+@@ -17,6 +17,7 @@ mod log;
+ mod mugetsu;
+ mod player;
+ mod preferences;
++mod skua;
+ #[cfg(feature = "tracy")]
+ mod tracy;
+ mod util;
+@@ -212,8 +213,13 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+     }
+     let gui = args.iter().any(|a| is(a, "--gui"));
+     args.retain(|a| !is(a, "--gui"));
++    // Skua build: started by Bonxie with skua.swf as the movie, but with Mugetsu's AQW settings.
++    let skua = args.iter().any(|a| a.to_str().is_some_and(|a| a.starts_with("--skua-bridge")));
++    if skua {
++        skua::set_active();
++    }
+     let has_movie = Opt::try_parse_from(&args).map_or(true, |opt| opt.movie_url.is_some());
+-    if has_movie {
++    if has_movie && !skua {
+         // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
+         return args;
+     }
+@@ -280,7 +286,10 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+         ("--no-gui", None, None),
+         ("--graphics", Some("-g"), Some(graphics)),
+     ]);
+-    let mut full = vec![args[0].clone(), AQW_LOADER_URL.into()];
++    let mut full = vec![args[0].clone()];
++    if !skua {
++        full.push(AQW_LOADER_URL.into());
++    }
+     for (flag, short, value) in defaults {
+         if (flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
+             continue;
+diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
+index 0876301..e4a805a 100644
+--- a/desktop/src/mugetsu.rs
++++ b/desktop/src/mugetsu.rs
+@@ -10,10 +10,7 @@ use winit::window::Window;
+ 
+ /// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
+ /// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
+-pub const VERSION: &str = "1.6.0";
+-
+-const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
+-const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
++pub const VERSION: &str = "1.6.0-skua.4";
+ 
+ // --- Window title -------------------------------------------------------------------------
+ 
+@@ -42,7 +39,7 @@ fn config_dir() -> Option<PathBuf> {
+     dirs::config_local_dir().map(|dir| dir.join("ruffle"))
+ }
+ 
+-/// A file named `name` next to Mugetsu's program exists (`verbose-log`, `no-update-check`).
++/// A file named `name` next to Mugetsu's program exists (`verbose-log`, `no-atlas`).
+ pub fn exe_flag(name: &str) -> bool {
+     // Also `name.txt`: Windows hides extensions, so a "new text document" renamed to `name`
+     // is really `name.txt`.
+@@ -741,100 +738,6 @@ pub fn check_gpu_choice(window: Arc<Window>, chosen: &wgpu::AdapterInfo, power:
+         });
+ }
+ 
+-// --- New version notice -------------------------------------------------------------------
+-
+-/// Asks GitHub for the latest release once at startup. If it is newer, the window title says
+-/// so and a message (once per version) offers to open the download page. Nothing is
+-/// downloaded or installed; a `no-update-check` file next to Mugetsu.exe turns this off.
+-pub fn spawn_update_check(window: Arc<Window>) {
+-    if exe_flag("no-update-check") {
+-        return;
+-    }
+-    let _ = std::thread::Builder::new()
+-        .name("update check".to_string())
+-        .spawn(move || {
+-            let latest = match latest_release() {
+-                Ok(latest) => latest,
+-                Err(error) => {
+-                    tracing::info!("Update check failed: {error}");
+-                    return;
+-                }
+-            };
+-            let Some(latest_number) = parse_version(&latest) else {
+-                return;
+-            };
+-            // `RUFFLE_TEST_UPDATE_FROM=0.9` pretends to be that version (testing).
+-            let current = std::env::var("RUFFLE_TEST_UPDATE_FROM").unwrap_or(VERSION.to_string());
+-            if Some(latest_number) <= parse_version(&current) {
+-                tracing::info!("Mugetsu {current} is up to date (latest release: {latest})");
+-                return;
+-            }
+-            let latest = latest.trim_start_matches('v').to_string();
+-            tracing::info!("Mugetsu {latest} is available");
+-            add_title_note(format!("update {latest} available"));
+-            window.set_title(&window_title());
+-
+-            let Some(dir) = config_dir() else { return };
+-            let marker = dir.join("mugetsu-update-notified");
+-            if std::fs::read_to_string(&marker).is_ok_and(|seen| seen.trim() == latest) {
+-                return;
+-            }
+-            let _ = std::fs::create_dir_all(&dir);
+-            let _ = std::fs::write(&marker, &latest);
+-            let answer = rfd::MessageDialog::new()
+-                .set_level(rfd::MessageLevel::Info)
+-                .set_title("Mugetsu")
+-                .set_description(format!(
+-                    "Mugetsu {latest} is available (you have {current}).\n\n\
+-                    Open the download page?"
+-                ))
+-                .set_buttons(rfd::MessageButtons::YesNo)
+-                .show();
+-            if answer == rfd::MessageDialogResult::Yes {
+-                let _ = webbrowser::open(RELEASES_PAGE);
+-            }
+-        });
+-}
+-
+-fn latest_release() -> Result<String, Box<dyn std::error::Error>> {
+-    let client = reqwest::blocking::Client::builder()
+-        .timeout(Duration::from_secs(15))
+-        .user_agent(format!("Mugetsu/{VERSION}"))
+-        .build()?;
+-    let body = client
+-        .get(RELEASES_API)
+-        .header("Accept", "application/vnd.github+json")
+-        .send()?
+-        .error_for_status()?
+-        .text()?;
+-    let release: serde_json::Value = serde_json::from_str(&body)?;
+-    let tag = release["tag_name"]
+-        .as_str()
+-        .ok_or("no tag_name in the release")?;
+-    Ok(tag.to_string())
+-}
+-
+-/// "v1.0.2" / "1.0.2" -> (1, 0, 2); missing parts are 0.
+-fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+-    let mut parts = text.trim().trim_start_matches('v').split('.');
+-    let mut next = || -> Option<u32> { parts.next().map_or(Some(0), |p| p.parse().ok()) };
+-    Some((next()?, next()?, next()?))
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::parse_version;
+-
+-    #[test]
+-    fn versions() {
+-        assert_eq!(parse_version("v1.0.2"), Some((1, 0, 2)));
+-        assert_eq!(parse_version("1.1"), Some((1, 1, 0)));
+-        assert_eq!(parse_version("v2"), Some((2, 0, 0)));
+-        assert_eq!(parse_version("v1.0-beta"), None);
+-        assert!(parse_version("v1.0.10") > parse_version("1.0.9"));
+-    }
+-}
+-
+ #[cfg(all(test, windows))]
+ mod intel_tests {
+     /// Prints what the Intel check sees on this PC (run with `--nocapture`).
+diff --git a/desktop/src/player.rs b/desktop/src/player.rs
+index b37bdd8..681f265 100644
+--- a/desktop/src/player.rs
++++ b/desktop/src/player.rs
+@@ -276,7 +276,10 @@ impl ActivePlayer {
+             .expect("Couldn't create wgpu rendering backend");
+         RENDER_INFO.with(|i| *i.borrow_mut() = Some(renderer.debug_info().to_string()));
+ 
+-        if opt.player.dummy_external_interface.unwrap_or_default() {
++        if let Some(addr) = &preferences.cli.skua_bridge {
++            crate::skua::connect(addr, event_loop.clone()).expect("Couldn't connect to Bonxie");
++            builder = builder.with_external_interface(Box::new(crate::skua::SkuaExternalInterface));
++        } else if opt.player.dummy_external_interface.unwrap_or_default() {
+             builder = builder.with_external_interface(Box::new(DesktopExternalInterfaceProvider {
+                 spoof_url: opt.player.spoof_url.clone(),
+             }));
+diff --git a/desktop/src/skua.rs b/desktop/src/skua.rs
+new file mode 100644
+index 0000000..0d58d53
+--- /dev/null
++++ b/desktop/src/skua.rs
+@@ -0,0 +1,286 @@
++//! Skua build: lets Bonxie drive the game and show it inside its own window.
++//!
++//! With `--skua-bridge host:port` the player connects to Bonxie over TCP and both sides send one
++//! JSON object per line:
++//!
++//! - Bonxie -> player: `{"id":1,"name":"isLoggedIn","args":[]}` calls an `ExternalInterface`
++//!   callback of the movie, answered with `{"id":1,"r":...}`.
++//! - player -> Bonxie: `{"ev":"loaded","args":[...]}` for every `ExternalInterface.call` of
++//!   skua.swf (its `Externalizer` sends them all as `skuaCall(name, args)`).
++//!
++//! When Bonxie closes the connection the player exits. `--skua-parent <window handle>` makes the
++//! window a borderless child of that window.
++
++use crate::custom_event::RuffleEvent;
++use ruffle_core::context::UpdateContext;
++use ruffle_core::external::{ExternalInterfaceProvider, Value as ExternalValue};
++use serde_json::{Map, Number, Value as Json, json};
++use std::collections::VecDeque;
++use std::io::{BufRead, BufReader, Write};
++use std::net::TcpStream;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Mutex, OnceLock};
++use winit::event_loop::EventLoopProxy;
++
++/// A call from Bonxie, run on the main thread (see `MainWindow::run_skua_calls`).
++pub struct SkuaCall {
++    pub id: u64,
++    pub name: String,
++    pub args: Vec<ExternalValue>,
++}
++
++static ACTIVE: AtomicBool = AtomicBool::new(false);
++static WRITER: OnceLock<Mutex<TcpStream>> = OnceLock::new();
++static CALLS: Mutex<VecDeque<SkuaCall>> = Mutex::new(VecDeque::new());
++/// Whether a `SkuaWake` is posted or the main thread will look at `CALLS` anyway.
++///
++/// Windows only paints (and winit only reaches `about_to_wait`, where the game ticks) once a
++/// thread's message queue is empty, and every `EventLoopProxy::send_event` is a posted message.
++/// Bonxie calls the game nonstop, so one message per call kept the queue full and froze the game
++/// for up to seconds. Instead at most one wake is posted, and the main thread only asks for the next
++/// one in `about_to_wait`, after the queue (and painting) has run.
++static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
++
++/// Set by `main::mugetsu_args` when started by Bonxie.
++pub fn set_active() {
++    ACTIVE.store(true, Ordering::Relaxed);
++}
++
++pub fn active() -> bool {
++    ACTIVE.load(Ordering::Relaxed)
++}
++
++/// Connects to Bonxie (once; later movies reuse the connection) and starts reading its calls.
++pub fn connect(addr: &str, event_loop: EventLoopProxy<RuffleEvent>) -> std::io::Result<()> {
++    if WRITER.get().is_some() {
++        return Ok(());
++    }
++
++    #[cfg(target_os = "linux")]
++    {
++        unsafe extern "C" {
++            fn prctl(
++                option: std::os::raw::c_int,
++                arg2: std::os::raw::c_ulong,
++                arg3: std::os::raw::c_ulong,
++                arg4: std::os::raw::c_ulong,
++                arg5: std::os::raw::c_ulong,
++            ) -> std::os::raw::c_int;
++        }
++        unsafe {
++            prctl(1, 9, 0, 0, 0); // PR_SET_PDEATHSIG, SIGKILL
++        }
++    }
++    let stream = TcpStream::connect(addr)?;
++    stream.set_nodelay(true)?;
++    let reader = BufReader::new(stream.try_clone()?);
++    let _ = WRITER.set(Mutex::new(stream));
++
++    std::thread::Builder::new()
++        .name("skua bridge".to_string())
++        .spawn(move || {
++            for line in reader.lines() {
++                let Ok(line) = line else { break };
++                match parse_call(&line) {
++                    Some(call) => {
++                        lock(&CALLS).push_back(call);
++                        if !WAKE_PENDING.swap(true, Ordering::AcqRel)
++                            && event_loop.send_event(RuffleEvent::SkuaWake).is_err()
++                        {
++                            return;
++                        }
++                    }
++                    None => tracing::warn!("Skua bridge: bad message {line}"),
++                }
++            }
++            tracing::info!("Skua bridge closed, exiting");
++            std::process::exit(0);
++        })?;
++    Ok(())
++}
++
++fn parse_call(line: &str) -> Option<SkuaCall> {
++    let msg: Json = serde_json::from_str(line).ok()?;
++    Some(SkuaCall {
++        id: msg.get("id")?.as_u64()?,
++        name: msg.get("name")?.as_str()?.to_string(),
++        args: match msg.get("args") {
++            Some(Json::Array(args)) => args.iter().map(from_json).collect(),
++            _ => Vec::new(),
++        },
++    })
++}
++
++fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
++    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
++}
++
++/// The calls received so far, for the main thread to run.
++pub fn take_calls() -> VecDeque<SkuaCall> {
++    std::mem::take(&mut *lock(&CALLS))
++}
++
++/// Called from `about_to_wait`: calls arriving from now on post a new wake.
++pub fn rearm() {
++    WAKE_PENDING.store(false, Ordering::Release);
++}
++
++pub fn reply(id: u64, result: ExternalValue) {
++    send(&json!({ "id": id, "r": to_json(&result) }));
++}
++
++fn send(msg: &Json) {
++    if let Some(writer) = WRITER.get() {
++        // One write per message: formatting straight into the socket made a send() (and, with
++        // nodelay, a packet) per JSON token, so a big reply held up the game for seconds.
++        if let Err(error) = lock(writer).write_all(format!("{msg}\n").as_bytes()) {
++            tracing::warn!("Skua bridge: send failed: {error}");
++        }
++    }
++}
++
++fn to_json(value: &ExternalValue) -> Json {
++    match value {
++        ExternalValue::Undefined | ExternalValue::Null => Json::Null,
++        ExternalValue::Bool(b) => Json::Bool(*b),
++        // Whole numbers as integers, the way Flash's ExternalInterface printed them.
++        ExternalValue::Number(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => Json::from(*n as i64),
++        ExternalValue::Number(n) => Number::from_f64(*n).map_or(Json::Null, Json::Number),
++        ExternalValue::String(s) => Json::String(s.clone()),
++        ExternalValue::List(list) => Json::Array(list.iter().map(to_json).collect()),
++        ExternalValue::Object(map) => Json::Object(
++            map.iter()
++                .map(|(key, value)| (key.clone(), to_json(value)))
++                .collect::<Map<_, _>>(),
++        ),
++    }
++}
++
++fn from_json(value: &Json) -> ExternalValue {
++    match value {
++        Json::Null => ExternalValue::Null,
++        Json::Bool(b) => ExternalValue::Bool(*b),
++        Json::Number(n) => ExternalValue::Number(n.as_f64().unwrap_or_default()),
++        Json::String(s) => ExternalValue::String(s.clone()),
++        Json::Array(list) => ExternalValue::List(list.iter().map(from_json).collect()),
++        Json::Object(map) => ExternalValue::Object(
++            map.iter()
++                .map(|(key, value)| (key.clone(), from_json(value)))
++                .collect(),
++        ),
++    }
++}
++
++/// Gives the keyboard to the player's window. Windows doesn't move focus to a child window when it
++/// is clicked (standard controls take it themselves), so without this Bonxie's window keeps it and
++/// the game gets no keys.
++#[cfg(windows)]
++pub fn take_focus(window: &winit::window::Window) {
++    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
++
++    #[link(name = "user32")]
++    unsafe extern "system" {
++        fn SetFocus(hwnd: isize) -> isize;
++    }
++
++    if let Ok(handle) = window.window_handle()
++        && let RawWindowHandle::Win32(handle) = handle.as_raw()
++    {
++        // SAFETY: SetFocus only takes the handle of this live window.
++        unsafe { SetFocus(handle.hwnd.get()) };
++    }
++}
++
++/// On X11 the same holds, and winit's `focus_window` only asks the window manager to activate top-level
++/// windows, so the child window sets the input focus itself (libX11 is loaded at runtime, like winit does).
++#[cfg(all(unix, not(target_os = "macos")))]
++pub fn take_focus(window: &winit::window::Window) {
++    use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
++    use x11_dl::xlib;
++
++    // Main thread only, like every winit window call.
++    thread_local! {
++        static XLIB: Option<xlib::Xlib> = xlib::Xlib::open().ok();
++    }
++
++    let (Ok(window_handle), Ok(display_handle)) = (window.window_handle(), window.display_handle()) else {
++        return;
++    };
++    match (window_handle.as_raw(), display_handle.as_raw()) {
++        (RawWindowHandle::Xlib(window_handle), RawDisplayHandle::Xlib(display_handle)) => XLIB.with(|xlib| {
++            let (Some(xlib), Some(display)) = (xlib, display_handle.display) else {
++                return;
++            };
++            let display: *mut xlib::Display = display.as_ptr().cast();
++            // SAFETY: the display and window are winit's live X11 handles for this window.
++            unsafe {
++                (xlib.XSetInputFocus)(display, window_handle.window, xlib::RevertToParent, xlib::CurrentTime);
++                (xlib.XFlush)(display);
++            }
++        }),
++        _ => window.focus_window(),
++    }
++}
++
++#[cfg(target_os = "macos")]
++pub fn take_focus(window: &winit::window::Window) {
++    window.focus_window();
++}
++
++/// skua.swf's `ExternalInterface.call`s, forwarded to Bonxie as events.
++pub struct SkuaExternalInterface;
++
++impl ExternalInterfaceProvider for SkuaExternalInterface {
++    fn call_method(
++        &self,
++        _context: &mut UpdateContext<'_>,
++        name: &str,
++        args: &[ExternalValue],
++    ) -> ExternalValue {
++        match (name, args) {
++            ("skuaCall", [ExternalValue::String(event), rest @ ..]) => {
++                let args = match rest.first() {
++                    Some(ExternalValue::List(list)) => list.iter().map(to_json).collect(),
++                    _ => Vec::new(),
++                };
++                send(&json!({ "ev": event, "args": args }));
++            }
++            _ => tracing::warn!("Skua bridge: unknown ExternalInterface call {name}"),
++        }
++        ExternalValue::Undefined
++    }
++
++    fn on_callback_available(&self, _name: &str) {}
++
++    fn get_id(&self) -> Option<String> {
++        None
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn json_round_trip() {
++        let value = ExternalValue::List(vec![
++            ExternalValue::Number(5.0),
++            ExternalValue::Number(1.5),
++            ExternalValue::String("a\"b".into()),
++            ExternalValue::Bool(true),
++            ExternalValue::Null,
++        ]);
++        let json = to_json(&value);
++        assert_eq!(json.to_string(), r#"[5,1.5,"a\"b",true,null]"#);
++        assert_eq!(from_json(&json), value);
++    }
++
++    #[test]
++    fn parses_calls() {
++        let call = parse_call(r#"{"id":7,"name":"getGameObject","args":["world.myAvatar"]}"#)
++            .expect("valid call");
++        assert_eq!((call.id, call.name.as_str()), (7, "getGameObject"));
++        assert_eq!(call.args, vec![ExternalValue::String("world.myAvatar".into())]);
++        assert!(parse_call("not json").is_none());
++    }
++}
+         if open_url_mode == OpenUrlMode::Confirm {

@@ -59,6 +59,8 @@ run git -C "$ruffle" -c advice.detachedHead=false checkout -q FETCH_HEAD
 
 # 2. Mugetsu's changes to Ruffle.
 run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/ruffle.patch"
+# Skua build: the bridge to VibeSkua and drawing inside its window.
+run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/skua.patch"
 
 # 3. The five libraries Mugetsu changes, from crates.io, patched into ruffle/patches/.
 crates=(
