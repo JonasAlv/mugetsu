@@ -271,6 +271,26 @@ diff --git a/desktop/src/gui/context_menu.rs b/desktop/src/gui/context_menu.rs
                              });
                              item_clicked = true;
                          }
+diff --git a/desktop/src/gui/menu_bar.rs b/desktop/src/gui/menu_bar.rs
+--- a/desktop/src/gui/menu_bar.rs
++++ b/desktop/src/gui/menu_bar.rs
+@@ -78,13 +78,13 @@
+-        let mut fullscreen_pressed =
+-            egui_ctx.input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN));
+-        if cfg!(windows) && !fullscreen_pressed {
++        let mut fullscreen_pressed = !crate::skua::active()
++            && egui_ctx.input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN));
++        if cfg!(windows) && !crate::skua::active() && !fullscreen_pressed {
+             // TODO We can remove this shortcut when we add some kind of preferences.
+             fullscreen_pressed = egui_ctx
+                 .input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN_WINDOWS));
+         }
+         if let Some(player) = &mut player
+             && fullscreen_pressed
+         {
+             let is_fullscreen = player.is_fullscreen();
+             player.set_fullscreen(!is_fullscreen);
+         }
 diff --git a/desktop/src/cli.rs b/desktop/src/cli.rs
 index aa9f96e..8c4f1c3 100644
 --- a/desktop/src/cli.rs
