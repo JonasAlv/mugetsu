@@ -183,6 +183,78 @@ index a5f7bc2..c3cd08a 100644
              (Some(main_window), RuffleEvent::MugetsuSetting(setting)) => {
                  main_window.apply_setting(setting);
              }
+@@ -630,6 +630,10 @@ impl MainWindow {
+                 };
+                 let handled = self.player.handle_event(event);
+-                if !handled && state == ElementState::Pressed && button == RuffleMouseButton::Right
++                // Skua build: always offer Mugetsu's menu from an embedded child. The movie can
++                // report the right button as handled even though Bonxie still needs this menu.
++                if (!handled || self.preferences.cli.skua_parent.is_some())
++                    && state == ElementState::Pressed
++                    && button == RuffleMouseButton::Right
+                 {
+                     // Show context menu.
+                     if let Some(mut player) = self.player.get() {
+diff --git a/desktop/src/backends/ui.rs b/desktop/src/backends/ui.rs
+--- a/desktop/src/backends/ui.rs
++++ b/desktop/src/backends/ui.rs
+@@ -249,8 +249,13 @@ impl UiBackend for DesktopUiBackend {
+     fn set_fullscreen(&mut self, is_full: bool) -> Result<(), FullscreenError> {
++        // Skua build: the player is an X11 child inside Bonxie. Change Flash's stage state, but
++        // never ask the child window itself to enter desktop fullscreen.
++        if crate::skua::active() {
++            return Ok(());
++        }
+         self.window.set_fullscreen(if is_full {
+             Some(Fullscreen::Borderless(None))
+         } else {
+             None
+         });
+         Ok(())
+     }
+diff --git a/desktop/src/linux.rs b/desktop/src/linux.rs
+--- a/desktop/src/linux.rs
++++ b/desktop/src/linux.rs
+@@ -15,22 +15,35 @@
+ pub fn choose_graphics(_window: &winit::window::Window, choice: Option<Graphics>) {
+     if choice == mugetsu::saved_graphics() {
+         return;
+     }
+     let name = choice.map_or("Automatic", Graphics::name);
++    let embedded = crate::skua::active();
++    let description = if embedded {
++        format!(
++            "Mugetsu will use {name} graphics after you manually restart it.\n\n\
++             The embedded player cannot restart itself safely."
++        )
++    } else {
++        format!(
++            "Mugetsu will restart to use {name} graphics.\n\n\
++             You can switch again any time: right-click the game."
++        )
++    };
+     let answer = rfd::MessageDialog::new()
+         .set_level(rfd::MessageLevel::Info)
+         .set_title("Mugetsu")
+-        .set_description(format!(
+-            "Mugetsu will restart to use {name} graphics.\n\n\
+-             You can switch again any time: right-click the game."
+-        ))
++        .set_description(description)
+         .set_buttons(rfd::MessageButtons::OkCancel)
+         .show();
+     if answer != rfd::MessageDialogResult::Ok {
+         return;
+     }
+     mugetsu::save_graphics(choice);
++    if embedded {
++        tracing::info!("Graphics changed to {name}; restart Mugetsu manually to apply it");
++        return;
++    }
+     tracing::info!("Graphics changed to {name}; starting Mugetsu again");
+     start_again();
+     std::process::exit(0);
+ }
 diff --git a/desktop/src/cli.rs b/desktop/src/cli.rs
 index aa9f96e..8c4f1c3 100644
 --- a/desktop/src/cli.rs
