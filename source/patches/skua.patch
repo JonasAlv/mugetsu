@@ -255,6 +255,22 @@ diff --git a/desktop/src/linux.rs b/desktop/src/linux.rs
      start_again();
      std::process::exit(0);
  }
+diff --git a/desktop/src/gui/context_menu.rs b/desktop/src/gui/context_menu.rs
+--- a/desktop/src/gui/context_menu.rs
++++ b/desktop/src/gui/context_menu.rs
+@@ -224,11 +224,11 @@
+                             send(RuffleEvent::MugetsuSetting(Setting::ShowFps(!settings.show_fps)));
+                             item_clicked = true;
+                         }
+-                        if toggle_row(ui, z, "Full screen", "Esc leaves full screen", fullscreen) {
++                        if !crate::skua::active() && toggle_row(ui, z, "Full screen", "Esc leaves full screen", fullscreen) {
+                             send(if fullscreen {
+                                 RuffleEvent::ExitFullScreen
+                             } else {
+                                 RuffleEvent::EnterFullScreen
+                             });
+                             item_clicked = true;
+                         }
 diff --git a/desktop/src/cli.rs b/desktop/src/cli.rs
 index aa9f96e..8c4f1c3 100644
 --- a/desktop/src/cli.rs
