@@ -18224,10 +18224,10 @@ index a8bcdf4aed0267c6bc5c8f892e6cef3870bb0b50..1f648131aaf05071feaef7116f14d4ee
 +        if let Some(ms) = set {
 +            tracing::info!(
 +                target: "ruffle_aqw_perf",
-+                "frame interpolation: the main thread's budget is {ms:.0} ms per second (650 normally)"
++                "frame interpolation: the main thread's budget is {ms:.0} ms per second (850 normally)"
 +            );
 +        }
-+        set.unwrap_or(650.0)
++        set.unwrap_or(850.0)
 +    })
 +}
 +
