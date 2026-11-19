@@ -1,17 +1,5 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index 3d9b65e..e843f32 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -5017,6 +5017,7 @@ dependencies = [
-  "windows-sys 0.61.2",
-  "winit",
-  "winresource",
-+ "x11-dl",
- ]
- 
- [[package]]
 diff --git a/core/src/avm2/globals/json.rs b/core/src/avm2/globals/json.rs
-index 43e1962..4f3b31c 100644
+index 43e19628..4f3b31c5 100644
 --- a/core/src/avm2/globals/json.rs
 +++ b/core/src/avm2/globals/json.rs
 @@ -181,7 +181,20 @@ impl<'gc> AvmSerializer<'gc> {
@@ -46,71 +34,43 @@ index 43e1962..4f3b31c 100644
              Value::Bool(b) => JsonValue::from(b),
              Value::String(s) => JsonValue::from(s.to_utf8_lossy().deref()),
 diff --git a/desktop/Cargo.toml b/desktop/Cargo.toml
-index b36589f..3dbc2ed 100644
+index c9958c3a..00000000 100644
 --- a/desktop/Cargo.toml
 +++ b/desktop/Cargo.toml
-@@ -70,6 +70,8 @@ fontconfig = { version = "0.11.0", optional = true }
- 
- [target.'cfg(target_os = "linux")'.dependencies]
- ashpd = { version = "0.13.0", features = ["settings", "game_mode"] }
-+# Skua build: keyboard focus for the window embedded in Bonxie (see `skua::take_focus`).
-+x11-dl = "2.21"
- 
- [target.'cfg(windows)'.dependencies]
- # AQW build: DXGI, to see which graphics chip Mugetsu will use (see `mugetsu::intel_graphics`).
+@@ -92,5 +92,5 @@
+ # Keep equal to `mugetsu::VERSION` (desktop/src/mugetsu.rs).
+-ProductVersion = "2.0.3"
+-FileVersion = "2.0.3 (Ruffle 0.8.0-nightly.2026.11.10)"
++ProductVersion = "2.0.3-skua.1"
++FileVersion = "2.0.3-skua.1 (Ruffle 0.8.0-nightly.2026.11.10)"
+ # InternalName should be the same as the module name
+ InternalName = "ruffle_desktop"
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a5f7bc2..c3cd08a 100644
+index 1f648131..da4a894f 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
-@@ -498,7 +498,24 @@ impl MainWindow {
-             return;
-         }
- 
--        if self.gui.handle_event(&event) {
-+        let embedded_mouse_event = self.preferences.cli.skua_parent.is_some()
-+            && matches!(
-+                &event,
-+                WindowEvent::CursorMoved { .. }
-+                    | WindowEvent::CursorEntered { .. }
-+                    | WindowEvent::CursorLeft { .. }
-+                    | WindowEvent::MouseInput { .. }
-+                    | WindowEvent::MouseWheel { .. }
-+            );
-+        let embedded_dialog = self.preferences.cli.skua_parent.is_some()
-+            && self.gui.is_open_url_dialog_visible();
-+        if embedded_mouse_event && embedded_dialog {
-+            let _ = self.gui.handle_event(&event);
-+            return;
-+        }
-+        if (!embedded_mouse_event || self.gui.is_context_menu_visible())
-+            && self.gui.handle_event(&event)
-+        {
-             // Event consumed by GUI.
-             return;
-         }
-@@ -588,6 +605,11 @@ impl MainWindow {
+@@ -1101,6 +1101,11 @@ impl MainWindow {
                  // Keep MouseMove -> MouseDown ordering and an up-to-date hover target.
                  self.flush_mouse_move();
  
 +                // Skua build: a clicked child window doesn't get the keyboard by itself.
-+                if state == ElementState::Released && self.preferences.cli.skua_parent.is_some() {
++                if state == ElementState::Pressed && self.preferences.cli.skua_parent.is_some() {
 +                    crate::skua::take_focus(self.gui.window());
 +                }
 +
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -777,7 +799,8 @@ impl MainWindow {
+@@ -1387,7 +1392,7 @@ impl MainWindow {
  
          // To prevent issues like waiting on resize indefinitely (#11364) or desyncing the window state on Windows,
          // do not resize while window is maximized.
 -        let should_resize = !self.gui.window().is_maximized();
-+        let should_resize =
-+            !self.gui.window().is_maximized() && self.preferences.cli.skua_parent.is_none();
++        let should_resize = !self.gui.window().is_maximized() && !crate::skua::active();
  
          let (viewport_size, state) = if should_resize {
              let movie_width = swf_header.stage_size().width().to_pixels();
-@@ -864,7 +887,28 @@ impl MainWindow {
+@@ -1476,7 +1481,28 @@ impl MainWindow {
          }
      }
  
@@ -139,42 +99,18 @@ index a5f7bc2..c3cd08a 100644
          if let Some(Event { event, .. }) = gilrs.and_then(|gilrs| gilrs.next_event()) {
              match event {
                  EventType::ButtonPressed(button, _) => {
-@@ -1118,6 +1162,22 @@ impl App {
-     }
- }
+@@ -2075,6 +2101,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+                 }
+             }
  
-+/// Skua build: a borderless child of the given native window (`--skua-parent`).
-+fn skua_child_of(attributes: WindowAttributes, parent: u64) -> WindowAttributes {
-+    use winit::raw_window_handle::RawWindowHandle;
-+    #[cfg(windows)]
-+    let handle = std::num::NonZeroIsize::new(parent as isize)
-+        .map(|hwnd| RawWindowHandle::Win32(winit::raw_window_handle::Win32WindowHandle::new(hwnd)));
-+    #[cfg(all(unix, not(target_os = "macos")))]
-+    let handle = Some(RawWindowHandle::Xlib(winit::raw_window_handle::XlibWindowHandle::new(
-+        parent as _,
-+    )));
-+    #[cfg(target_os = "macos")]
-+    let handle: Option<RawWindowHandle> = None; // ponytail: no embedding on macOS yet, own window
-+    // SAFETY: Bonxie keeps the parent window alive for as long as this player runs.
-+    unsafe { attributes.with_parent_window(handle) }.with_decorations(false)
-+}
-+
- impl ApplicationHandler<RuffleEvent> for App {
-     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-         enter_runtime!(self);
-@@ -1147,6 +1207,11 @@ impl ApplicationHandler<RuffleEvent> for App {
-                 .with_window_icon(Some(icon))
-                 .with_min_inner_size(min_window_size);
- 
-+            // Skua build: draw inside Bonxie's game area, which also sizes the window.
 +            if let Some(parent) = self.preferences.cli.skua_parent {
 +                window_attributes = skua_child_of(window_attributes, parent);
 +            }
 +
-             #[cfg(target_os = "linux")]
-             {
-                 use winit::platform::startup_notify::{
-@@ -1266,6 +1331,8 @@ impl ApplicationHandler<RuffleEvent> for App {
+             let event_loop_proxy = self.event_loop_proxy.clone();
+             let preferences = self.preferences.clone();
+             let window = event_loop
+@@ -2199,6 +2229,8 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -183,139 +119,25 @@ index a5f7bc2..c3cd08a 100644
              (Some(main_window), RuffleEvent::MugetsuSetting(setting)) => {
                  main_window.apply_setting(setting);
              }
-@@ -1365,12 +1365,22 @@ impl ApplicationHandler<RuffleEvent> for App {
-     fn window_event(
-         &mut self,
-         event_loop: &ActiveEventLoop,
-         _window_id: WindowId,
-         event: WindowEvent,
-     ) {
-         enter_runtime!(self);
-
-         if let Some(main_window) = &mut self.main_window {
-+            if self.preferences.cli.skua_parent.is_some() {
-+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-+                    main_window.window_event(event_loop, event);
-+                }));
-+                if result.is_err() {
-+                    tracing::warn!("Skua embedded window disappeared while handling an event; exiting");
-+                    event_loop.exit();
-+                }
-+            } else {
-             main_window.window_event(event_loop, event);
-+            }
-         }
-     }
-@@ -630,6 +630,10 @@ impl MainWindow {
-                 };
-                 let handled = self.player.handle_event(event);
--                if !handled && state == ElementState::Pressed && button == RuffleMouseButton::Right
-+                // Skua build: always offer Mugetsu's menu from an embedded child. The movie can
-+                // report the right button as handled even though Bonxie still needs this menu.
-+                if (!handled || self.preferences.cli.skua_parent.is_some())
-+                    && state == ElementState::Pressed
-+                    && button == RuffleMouseButton::Right
-                 {
-                     // Show context menu.
-                     if let Some(mut player) = self.player.get() {
-diff --git a/desktop/src/backends/ui.rs b/desktop/src/backends/ui.rs
---- a/desktop/src/backends/ui.rs
-+++ b/desktop/src/backends/ui.rs
-@@ -249,8 +249,13 @@ impl UiBackend for DesktopUiBackend {
-     fn set_fullscreen(&mut self, is_full: bool) -> Result<(), FullscreenError> {
-+        // Skua build: the player is an X11 child inside Bonxie. Change Flash's stage state, but
-+        // never ask the child window itself to enter desktop fullscreen.
-+        if crate::skua::active() {
-+            return Ok(());
-+        }
-         self.window.set_fullscreen(if is_full {
-             Some(Fullscreen::Borderless(None))
-         } else {
-             None
-         });
-         Ok(())
-     }
-diff --git a/desktop/src/linux.rs b/desktop/src/linux.rs
---- a/desktop/src/linux.rs
-+++ b/desktop/src/linux.rs
-@@ -15,22 +15,35 @@
- pub fn choose_graphics(_window: &winit::window::Window, choice: Option<Graphics>) {
-     if choice == mugetsu::saved_graphics() {
-         return;
-     }
-     let name = choice.map_or("Automatic", Graphics::name);
-+    let embedded = crate::skua::active();
-+    let description = if embedded {
-+        format!(
-+            "Mugetsu will use {name} graphics after you manually restart it.\n\n\
-+             The embedded player cannot restart itself safely."
-+        )
-+    } else {
-+        format!(
-+            "Mugetsu will restart to use {name} graphics.\n\n\
-+             You can switch again any time: right-click the game."
-+        )
-+    };
-     let answer = rfd::MessageDialog::new()
-         .set_level(rfd::MessageLevel::Info)
-         .set_title("Mugetsu")
--        .set_description(format!(
--            "Mugetsu will restart to use {name} graphics.\n\n\
--             You can switch again any time: right-click the game."
--        ))
-+        .set_description(description)
-         .set_buttons(rfd::MessageButtons::OkCancel)
-         .show();
-     if answer != rfd::MessageDialogResult::Ok {
-         return;
-     }
-     mugetsu::save_graphics(choice);
-+    if embedded {
-+        tracing::info!("Graphics changed to {name}; restart Mugetsu manually to apply it");
-+        return;
-+    }
-     tracing::info!("Graphics changed to {name}; starting Mugetsu again");
-     start_again();
-     std::process::exit(0);
+@@ -2497,3 +2529,16 @@ fn unbatched_mouse_moves() -> bool {
+     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+     *ENABLED.get_or_init(|| std::env::var_os("RUFFLE_UNBATCHED_MOUSE").is_some())
  }
-diff --git a/desktop/src/gui/context_menu.rs b/desktop/src/gui/context_menu.rs
---- a/desktop/src/gui/context_menu.rs
-+++ b/desktop/src/gui/context_menu.rs
-@@ -224,11 +224,11 @@
-                             send(RuffleEvent::MugetsuSetting(Setting::ShowFps(!settings.show_fps)));
-                             item_clicked = true;
-                         }
--                        if toggle_row(ui, z, "Full screen", "Esc leaves full screen", fullscreen) {
-+                        if !crate::skua::active() && toggle_row(ui, z, "Full screen", "Esc leaves full screen", fullscreen) {
-                             send(if fullscreen {
-                                 RuffleEvent::ExitFullScreen
-                             } else {
-                                 RuffleEvent::EnterFullScreen
-                             });
-                             item_clicked = true;
-                         }
-diff --git a/desktop/src/gui/menu_bar.rs b/desktop/src/gui/menu_bar.rs
---- a/desktop/src/gui/menu_bar.rs
-+++ b/desktop/src/gui/menu_bar.rs
-@@ -78,13 +78,13 @@
--        let mut fullscreen_pressed =
--            egui_ctx.input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN));
--        if cfg!(windows) && !fullscreen_pressed {
-+        let mut fullscreen_pressed = !crate::skua::active()
-+            && egui_ctx.input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN));
-+        if cfg!(windows) && !crate::skua::active() && !fullscreen_pressed {
-             // TODO We can remove this shortcut when we add some kind of preferences.
-             fullscreen_pressed = egui_ctx
-                 .input_mut(|input| input.consume_shortcut(&Self::SHORTCUT_FULLSCREEN_WINDOWS));
-         }
-         if let Some(player) = &mut player
-             && fullscreen_pressed
-         {
-             let is_fullscreen = player.is_fullscreen();
-             player.set_fullscreen(!is_fullscreen);
-         }
++
++/// Skua build: a borderless child of the given native window (`--skua-parent`).
++#[cfg_attr(not(windows), allow(unused_variables))]
++fn skua_child_of(attributes: WindowAttributes, parent: u64) -> WindowAttributes {
++    use winit::raw_window_handle::RawWindowHandle;
++    #[cfg(windows)]
++    let handle = std::num::NonZeroIsize::new(parent as isize)
++        .map(|hwnd| RawWindowHandle::Win32(winit::raw_window_handle::Win32WindowHandle::new(hwnd)));
++    #[cfg(not(windows))]
++    let handle: Option<RawWindowHandle> = None;
++    // SAFETY: Bonxie keeps the parent window alive for as long as this player runs.
++    unsafe { attributes.with_parent_window(handle) }.with_decorations(false)
++}
 diff --git a/desktop/src/cli.rs b/desktop/src/cli.rs
-index aa9f96e..8c4f1c3 100644
+index ff02b243..99514280 100644
 --- a/desktop/src/cli.rs
 +++ b/desktop/src/cli.rs
 @@ -217,6 +217,14 @@ pub struct Opt {
@@ -334,12 +156,12 @@ index aa9f96e..8c4f1c3 100644
      /// This can be used to add new gamepad support to existing games, for example mapping
      /// the D-pad to the arrow keys with -B d-pad-up=up -B d-pad-down=down etc.
 diff --git a/desktop/src/custom_event.rs b/desktop/src/custom_event.rs
-index 13be623..22f8757 100644
+index 21a5128a..d51ad033 100644
 --- a/desktop/src/custom_event.rs
 +++ b/desktop/src/custom_event.rs
-@@ -43,6 +43,9 @@ pub enum RuffleEvent {
-     /// AQW build: the user changed one of Mugetsu's settings (right-click menu).
-     MugetsuSetting(crate::mugetsu::Setting),
+@@ -46,6 +46,9 @@ pub enum RuffleEvent {
+     /// AQW build: something to tell the player in the game window (a new version, tips).
+     MugetsuNotice(crate::mugetsu::Notice),
  
 +    /// Skua build: Bonxie sent calls to run (see `skua::take_calls`).
 +    SkuaWake,
@@ -348,72 +170,50 @@ index 13be623..22f8757 100644
      OpenDialog(DialogDescriptor),
  
 diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
-index fb35b08..e44909f 100644
+index 1e4309d3..c04425ea 100644
 --- a/desktop/src/gui/controller.rs
 +++ b/desktop/src/gui/controller.rs
-@@ -106,7 +106,6 @@ impl GuiController {
-             &adapter_info,
-             preferences.graphics_power_preference().into(),
+@@ -182,7 +182,9 @@ impl GuiController {
+             },
          );
--        crate::mugetsu::spawn_update_check(window.clone());
+         tracing::info!("Detailed shapes are tessellated for at least {shape_min_px} px");
+-        crate::mugetsu::spawn_update_check(window.clone(), event_loop.clone());
++        if !crate::skua::active() {
++            crate::mugetsu::spawn_update_check(window.clone(), event_loop.clone());
++        }
          #[cfg(windows)]
          if crate::mugetsu::plays_aqw() {
-             crate::windows::add_graphics_menu(&window);
-@@ -361,6 +360,10 @@ impl GuiController {
-                 surface_texture
-             }
-             state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
-+                if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
-+                    tracing::info!("Skua surface lost (host window closed), exiting");
-+                    std::process::exit(0);
-+                }
-                 // Reconfigure the surface if lost or outdated.
-                 // Some sources suggest ignoring `Outdated` and waiting for the next frame,
-                 // but I suspect this advice is related explicitly to resizing,
-@@ -556,6 +559,10 @@ impl GuiController {
-         self.gui.is_context_menu_visible()
-     }
- 
-+    pub fn is_open_url_dialog_visible(&self) -> bool {
-+        self.gui.dialogs.is_open_url_dialog_visible()
-+    }
-+
-     /// AQW build: whether GUI-only repaints are useful: egui shows something, or is about to.
-     pub fn wants_redraws(&self) -> bool {
-         self.ui_visible || self.gui.is_context_menu_visible()
-diff --git a/desktop/src/gui/dialogs.rs b/desktop/src/gui/dialogs.rs
-index c6cbf23..849cd8c 100644
---- a/desktop/src/gui/dialogs.rs
-+++ b/desktop/src/gui/dialogs.rs
-@@ -182,6 +182,10 @@ impl Dialogs {
-         self.open_dialog.options()
-     }
- 
-+    pub fn is_open_url_dialog_visible(&self) -> bool {
-+        self.open_url_dialog.is_some()
-+    }
-+
-     pub fn open_dialog(&mut self, event: DialogDescriptor) {
-         match event {
-             DialogDescriptor::OpenUrl(url) => {
+             crate::windows::add_graphics_menu(&window, event_loop.clone());
+@@ -830,6 +832,10 @@ fn present_frame(
+             surface_texture
+         }
+         state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
++            if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
++                tracing::info!("Skua surface lost (host window closed), exiting");
++                std::process::exit(0);
++            }
+             // Reconfigure the surface if lost or outdated.
+             // Some sources suggest ignoring `Outdated` and waiting for the next frame,
+             // but I suspect this advice is related explicitly to resizing,
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 0c50b93..ac5f687 100644
+index d8e56d2b..89605abe 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
-@@ -17,6 +17,7 @@ mod log;
+@@ -18,6 +18,7 @@ mod memory_split;
  mod mugetsu;
  mod player;
  mod preferences;
 +mod skua;
+ mod test_hooks;
  #[cfg(feature = "tracy")]
  mod tracy;
- mod util;
-@@ -212,8 +213,13 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+@@ -215,8 +216,14 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
      }
      let gui = args.iter().any(|a| is(a, "--gui"));
      args.retain(|a| !is(a, "--gui"));
-+    // Skua build: started by Bonxie with skua.swf as the movie, but with Mugetsu's AQW settings.
-+    let skua = args.iter().any(|a| a.to_str().is_some_and(|a| a.starts_with("--skua-bridge")));
++    // Skua build: started by Skua/Bonxie with skua.swf as the movie, but with Mugetsu's AQW settings.
++    let embedded_env = env::var_os("SKUA_EMBEDDED").is_some_and(|v| v == "1");
++    let skua = args.iter().any(|a| a.to_str().is_some_and(|a| a.starts_with("--skua-bridge"))) || embedded_env;
 +    if skua {
 +        skua::set_active();
 +    }
@@ -421,9 +221,9 @@ index 0c50b93..ac5f687 100644
 -    if has_movie {
 +    if has_movie && !skua {
          // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
-         return args;
-     }
-@@ -280,7 +286,10 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+         // (`RUFFLE_TEST_INTERPOLATION=1`, testing: with frame interpolation, as AQW can have.)
+         if env::var_os("RUFFLE_TEST_INTERPOLATION").is_some() {
+@@ -338,7 +345,10 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
          ("--no-gui", None, None),
          ("--graphics", Some("-g"), Some(graphics)),
      ]);
@@ -436,22 +236,19 @@ index 0c50b93..ac5f687 100644
          if (flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
              continue;
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
-index 0876301..e4a805a 100644
+index 557a8a77..00000000 100644
 --- a/desktop/src/mugetsu.rs
 +++ b/desktop/src/mugetsu.rs
-@@ -10,10 +10,7 @@ use winit::window::Window;
+@@ -10,7 +10,7 @@ use winit::window::Window;
  
  /// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
  /// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
--pub const VERSION: &str = "1.6.0";
--
--const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
--const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
-+pub const VERSION: &str = "1.6.0-skua.4";
+-pub const VERSION: &str = "2.0.3";
++pub const VERSION: &str = "2.0.3-skua.1";
  
- // --- Window title -------------------------------------------------------------------------
- 
-@@ -42,7 +39,7 @@ fn config_dir() -> Option<PathBuf> {
+ const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
+ const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
+@@ -42,7 +42,7 @@ fn config_dir() -> Option<PathBuf> {
      dirs::config_local_dir().map(|dir| dir.join("ruffle"))
  }
  
@@ -460,114 +257,23 @@ index 0876301..e4a805a 100644
  pub fn exe_flag(name: &str) -> bool {
      // Also `name.txt`: Windows hides extensions, so a "new text document" renamed to `name`
      // is really `name.txt`.
-@@ -741,100 +738,6 @@ pub fn check_gpu_choice(window: Arc<Window>, chosen: &wgpu::AdapterInfo, power:
-         });
- }
- 
--// --- New version notice -------------------------------------------------------------------
--
--/// Asks GitHub for the latest release once at startup. If it is newer, the window title says
--/// so and a message (once per version) offers to open the download page. Nothing is
--/// downloaded or installed; a `no-update-check` file next to Mugetsu.exe turns this off.
--pub fn spawn_update_check(window: Arc<Window>) {
--    if exe_flag("no-update-check") {
--        return;
--    }
--    let _ = std::thread::Builder::new()
--        .name("update check".to_string())
--        .spawn(move || {
--            let latest = match latest_release() {
--                Ok(latest) => latest,
--                Err(error) => {
--                    tracing::info!("Update check failed: {error}");
--                    return;
--                }
--            };
--            let Some(latest_number) = parse_version(&latest) else {
--                return;
--            };
--            // `RUFFLE_TEST_UPDATE_FROM=0.9` pretends to be that version (testing).
--            let current = std::env::var("RUFFLE_TEST_UPDATE_FROM").unwrap_or(VERSION.to_string());
+@@ -1537,7 +1537,8 @@ pub fn spawn_update_check(
+             };
+             // `RUFFLE_TEST_UPDATE_FROM=0.9` pretends to be that version (testing).
+             let current = std::env::var("RUFFLE_TEST_UPDATE_FROM").unwrap_or(VERSION.to_string());
 -            if Some(latest_number) <= parse_version(&current) {
--                tracing::info!("Mugetsu {current} is up to date (latest release: {latest})");
--                return;
--            }
--            let latest = latest.trim_start_matches('v').to_string();
--            tracing::info!("Mugetsu {latest} is available");
--            add_title_note(format!("update {latest} available"));
--            window.set_title(&window_title());
--
--            let Some(dir) = config_dir() else { return };
--            let marker = dir.join("mugetsu-update-notified");
--            if std::fs::read_to_string(&marker).is_ok_and(|seen| seen.trim() == latest) {
--                return;
--            }
--            let _ = std::fs::create_dir_all(&dir);
--            let _ = std::fs::write(&marker, &latest);
--            let answer = rfd::MessageDialog::new()
--                .set_level(rfd::MessageLevel::Info)
--                .set_title("Mugetsu")
--                .set_description(format!(
--                    "Mugetsu {latest} is available (you have {current}).\n\n\
--                    Open the download page?"
--                ))
--                .set_buttons(rfd::MessageButtons::YesNo)
--                .show();
--            if answer == rfd::MessageDialogResult::Yes {
--                let _ = webbrowser::open(RELEASES_PAGE);
--            }
--        });
--}
--
--fn latest_release() -> Result<String, Box<dyn std::error::Error>> {
--    let client = reqwest::blocking::Client::builder()
--        .timeout(Duration::from_secs(15))
--        .user_agent(format!("Mugetsu/{VERSION}"))
--        .build()?;
--    let body = client
--        .get(RELEASES_API)
--        .header("Accept", "application/vnd.github+json")
--        .send()?
--        .error_for_status()?
--        .text()?;
--    let release: serde_json::Value = serde_json::from_str(&body)?;
--    let tag = release["tag_name"]
--        .as_str()
--        .ok_or("no tag_name in the release")?;
--    Ok(tag.to_string())
--}
--
--/// "v1.0.2" / "1.0.2" -> (1, 0, 2); missing parts are 0.
--fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
--    let mut parts = text.trim().trim_start_matches('v').split('.');
--    let mut next = || -> Option<u32> { parts.next().map_or(Some(0), |p| p.parse().ok()) };
--    Some((next()?, next()?, next()?))
--}
--
--#[cfg(test)]
--mod tests {
--    use super::parse_version;
--
--    #[test]
--    fn versions() {
--        assert_eq!(parse_version("v1.0.2"), Some((1, 0, 2)));
--        assert_eq!(parse_version("1.1"), Some((1, 1, 0)));
--        assert_eq!(parse_version("v2"), Some((2, 0, 0)));
--        assert_eq!(parse_version("v1.0-beta"), None);
--        assert!(parse_version("v1.0.10") > parse_version("1.0.9"));
--    }
--}
--
- #[cfg(all(test, windows))]
- mod intel_tests {
-     /// Prints what the Intel check sees on this PC (run with `--nocapture`).
++            let current_base = current.split("-skua.").next().unwrap_or(&current);
++            if Some(latest_number) <= parse_version(current_base) {
+                 tracing::info!("Mugetsu {current} is up to date (latest release: {latest})");
+                 return;
+             }
 diff --git a/desktop/src/player.rs b/desktop/src/player.rs
-index b37bdd8..681f265 100644
+index 899a4465..dffef2b3 100644
 --- a/desktop/src/player.rs
 +++ b/desktop/src/player.rs
-@@ -276,7 +276,10 @@ impl ActivePlayer {
-             .expect("Couldn't create wgpu rendering backend");
-         RENDER_INFO.with(|i| *i.borrow_mut() = Some(renderer.debug_info().to_string()));
+@@ -286,7 +286,10 @@ impl ActivePlayer {
+             Box::new(renderer)
+         };
  
 -        if opt.player.dummy_external_interface.unwrap_or_default() {
 +        if let Some(addr) = &preferences.cli.skua_bridge {
@@ -579,22 +285,24 @@ index b37bdd8..681f265 100644
              }));
 diff --git a/desktop/src/skua.rs b/desktop/src/skua.rs
 new file mode 100644
-index 0000000..0d58d53
+index 00000000..00000000
 --- /dev/null
 +++ b/desktop/src/skua.rs
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,344 @@
 +//! Skua build: lets Bonxie drive the game and show it inside its own window.
 +//!
-+//! With `--skua-bridge host:port` the player connects to Bonxie over TCP and both sides send one
-+//! JSON object per line:
++//! With `--skua-bridge 127.0.0.1:port` the player connects to Bonxie over loopback TCP and both
++//! sides send one JSON object per line:
 +//!
 +//! - Bonxie -> player: `{"id":1,"name":"isLoggedIn","args":[]}` calls an `ExternalInterface`
 +//!   callback of the movie, answered with `{"id":1,"r":...}`.
++//! - Bonxie -> player: `{"input":"mugetsu_setting","name":"performance","value":"fast"}` applies
++//!   a live Mugetsu setting from Bonxie's Application Options.
 +//! - player -> Bonxie: `{"ev":"loaded","args":[...]}` for every `ExternalInterface.call` of
 +//!   skua.swf (its `Externalizer` sends them all as `skuaCall(name, args)`).
 +//!
 +//! When Bonxie closes the connection the player exits. `--skua-parent <window handle>` makes the
-+//! window a borderless child of that window.
++//! window a borderless child of that window on Windows.
 +
 +use crate::custom_event::RuffleEvent;
 +use ruffle_core::context::UpdateContext;
@@ -602,7 +310,7 @@ index 0000000..0d58d53
 +use serde_json::{Map, Number, Value as Json, json};
 +use std::collections::VecDeque;
 +use std::io::{BufRead, BufReader, Write};
-+use std::net::TcpStream;
++use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 +use std::sync::atomic::{AtomicBool, Ordering};
 +use std::sync::{Mutex, OnceLock};
 +use winit::event_loop::EventLoopProxy;
@@ -635,11 +343,40 @@ index 0000000..0d58d53
 +    ACTIVE.load(Ordering::Relaxed)
 +}
 +
++fn parse_loopback_addrs(addr: &str) -> std::io::Result<Vec<SocketAddr>> {
++    let addrs: Vec<SocketAddr> = if let Ok(sock) = addr.parse::<SocketAddr>() {
++        vec![sock]
++    } else {
++        let Some((host, _port)) = addr.rsplit_once(':') else {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                format!("Skua bridge address must be loopback host:port, got {addr}"),
++            ));
++        };
++        if !host.eq_ignore_ascii_case("localhost") {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::PermissionDenied,
++                format!("Skua bridge requires a loopback address, got {addr}"),
++            ));
++        }
++        addr.to_socket_addrs()?.collect()
++    };
++    if addrs.is_empty() || addrs.iter().any(|a| !a.ip().is_loopback()) {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::PermissionDenied,
++            format!("Skua bridge requires a loopback address, got {addr}"),
++        ));
++    }
++    Ok(addrs)
++}
++
 +/// Connects to Bonxie (once; later movies reuse the connection) and starts reading its calls.
 +pub fn connect(addr: &str, event_loop: EventLoopProxy<RuffleEvent>) -> std::io::Result<()> {
 +    if WRITER.get().is_some() {
 +        return Ok(());
 +    }
++
++    let addrs = parse_loopback_addrs(addr)?;
 +
 +    #[cfg(target_os = "linux")]
 +    {
@@ -656,7 +393,13 @@ index 0000000..0d58d53
 +            prctl(1, 9, 0, 0, 0); // PR_SET_PDEATHSIG, SIGKILL
 +        }
 +    }
-+    let stream = TcpStream::connect(addr)?;
++    let stream = TcpStream::connect(addrs.as_slice())?;
++    if !stream.peer_addr()?.ip().is_loopback() {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::PermissionDenied,
++            "Skua bridge peer is not loopback",
++        ));
++    }
 +    stream.set_nodelay(true)?;
 +    let reader = BufReader::new(stream.try_clone()?);
 +    let _ = WRITER.set(Mutex::new(stream));
@@ -666,16 +409,23 @@ index 0000000..0d58d53
 +        .spawn(move || {
 +            for line in reader.lines() {
 +                let Ok(line) = line else { break };
-+                match parse_call(&line) {
-+                    Some(call) => {
-+                        lock(&CALLS).push_back(call);
-+                        if !WAKE_PENDING.swap(true, Ordering::AcqRel)
-+                            && event_loop.send_event(RuffleEvent::SkuaWake).is_err()
-+                        {
-+                            return;
-+                        }
++                let Ok(msg) = serde_json::from_str::<Json>(&line) else {
++                    tracing::warn!("Skua bridge: bad json {line}");
++                    continue;
++                };
++                if let Some(setting) = parse_mugetsu_setting(&msg) {
++                    if event_loop.send_event(RuffleEvent::MugetsuSetting(setting)).is_err() {
++                        return;
 +                    }
-+                    None => tracing::warn!("Skua bridge: bad message {line}"),
++                } else if let Some(call) = parse_call_json(&msg) {
++                    lock(&CALLS).push_back(call);
++                    if !WAKE_PENDING.swap(true, Ordering::AcqRel)
++                        && event_loop.send_event(RuffleEvent::SkuaWake).is_err()
++                    {
++                        return;
++                    }
++                } else {
++                    tracing::warn!("Skua bridge: bad message {line}");
 +                }
 +            }
 +            tracing::info!("Skua bridge closed, exiting");
@@ -686,6 +436,10 @@ index 0000000..0d58d53
 +
 +fn parse_call(line: &str) -> Option<SkuaCall> {
 +    let msg: Json = serde_json::from_str(line).ok()?;
++    parse_call_json(&msg)
++}
++
++fn parse_call_json(msg: &Json) -> Option<SkuaCall> {
 +    Some(SkuaCall {
 +        id: msg.get("id")?.as_u64()?,
 +        name: msg.get("name")?.as_str()?.to_string(),
@@ -694,6 +448,33 @@ index 0000000..0d58d53
 +            _ => Vec::new(),
 +        },
 +    })
++}
++
++fn parse_mugetsu_setting(msg: &Json) -> Option<crate::mugetsu::Setting> {
++    use crate::mugetsu::{FpsLimit, Performance, Setting};
++    if msg.get("input")?.as_str()? != "mugetsu_setting" {
++        return None;
++    }
++    let name = msg.get("name")?.as_str()?;
++    let value = msg.get("value")?.as_str()?;
++    let is_on = |v: &str| matches!(v, "1" | "true" | "on");
++    match name {
++        "performance" => Some(Setting::Performance(match value.trim().to_ascii_lowercase().as_str() {
++            "balanced" => Performance::Balanced,
++            "fast" => Performance::Fast,
++            _ => Performance::Off,
++        })),
++        "interpolation" => Some(Setting::Interpolation(is_on(value))),
++        "uncapped" => Some(Setting::Uncapped(is_on(value))),
++        "fps_limit" => Some(Setting::FpsLimit(match value.trim() {
++            "screen" => FpsLimit::Screen,
++            n => n.parse::<u32>().ok().filter(|v| (30..=1000).contains(v)).map_or(FpsLimit::Off, FpsLimit::Fixed),
++        })),
++        "memory_limit" => value.trim().parse::<u32>().ok().map(Setting::MemoryLimit),
++        "free_memory" => Some(Setting::FreeMemory),
++        "show_fps" => Some(Setting::ShowFps(is_on(value))),
++        _ => None,
++    }
 +}
 +
 +fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -776,41 +557,8 @@ index 0000000..0d58d53
 +    }
 +}
 +
-+/// On X11 the same holds, and winit's `focus_window` only asks the window manager to activate top-level
-+/// windows, so the child window sets the input focus itself (libX11 is loaded at runtime, like winit does).
-+#[cfg(all(unix, not(target_os = "macos")))]
-+pub fn take_focus(window: &winit::window::Window) {
-+    use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-+    use x11_dl::xlib;
-+
-+    // Main thread only, like every winit window call.
-+    thread_local! {
-+        static XLIB: Option<xlib::Xlib> = xlib::Xlib::open().ok();
-+    }
-+
-+    let (Ok(window_handle), Ok(display_handle)) = (window.window_handle(), window.display_handle()) else {
-+        return;
-+    };
-+    match (window_handle.as_raw(), display_handle.as_raw()) {
-+        (RawWindowHandle::Xlib(window_handle), RawDisplayHandle::Xlib(display_handle)) => XLIB.with(|xlib| {
-+            let (Some(xlib), Some(display)) = (xlib, display_handle.display) else {
-+                return;
-+            };
-+            let display: *mut xlib::Display = display.as_ptr().cast();
-+            // SAFETY: the display and window are winit's live X11 handles for this window.
-+            unsafe {
-+                (xlib.XSetInputFocus)(display, window_handle.window, xlib::RevertToParent, xlib::CurrentTime);
-+                (xlib.XFlush)(display);
-+            }
-+        }),
-+        _ => window.focus_window(),
-+    }
-+}
-+
-+#[cfg(target_os = "macos")]
-+pub fn take_focus(window: &winit::window::Window) {
-+    window.focus_window();
-+}
++#[cfg(not(windows))]
++pub fn take_focus(_window: &winit::window::Window) {}
 +
 +/// skua.swf's `ExternalInterface.call`s, forwarded to Bonxie as events.
 +pub struct SkuaExternalInterface;
@@ -868,5 +616,20 @@ index 0000000..0d58d53
 +        assert_eq!(call.args, vec![ExternalValue::String("world.myAvatar".into())]);
 +        assert!(parse_call("not json").is_none());
 +    }
++
++    #[test]
++    fn bridge_requires_loopback() {
++        assert_eq!(
++            parse_loopback_addrs("127.0.0.1:41234").unwrap(),
++            vec!["127.0.0.1:41234".parse().unwrap()]
++        );
++        assert_eq!(
++            parse_loopback_addrs("[::1]:41234").unwrap(),
++            vec!["[::1]:41234".parse().unwrap()]
++        );
++        for rejected in ["10.0.0.1:41234", "example.com:41234", "[2001:db8::1]:41234"] {
++            let err = parse_loopback_addrs(rejected).unwrap_err();
++            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{rejected}");
++        }
++    }
 +}
-         if open_url_mode == OpenUrlMode::Confirm {

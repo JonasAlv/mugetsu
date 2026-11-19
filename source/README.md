@@ -15,7 +15,6 @@ the release page.
 | `RUFFLE_COMMIT` | The Ruffle commit Mugetsu is based on (nightly of 2026-10-02) |
 | `RUST_VERSION` | The Rust version releases are built with |
 | `patches/ruffle.patch` | All of Mugetsu's changes to Ruffle |
-| `patches/skua.patch` | The Skua build's changes, applied after `ruffle.patch`: the bridge to Bonxie and drawing inside its window (`desktop/src/skua.rs`) |
 | `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch`, `lyon_path.patch`, `lyon_algorithms.patch` | Changes to five libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0, lyon_path 1.0.7, lyon_algorithms 1.0.5 from crates.io) |
 | `pgo/aqw.profdata.zip` | The speed profile (PGO): counts of which code runs most while playing AQW, recorded with a measuring build. The compiler uses it to optimize for real play. It holds function names and counts only. |
 | `build-windows.ps1`, `build-linux.sh`, `build-macos.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux, macOS) |
